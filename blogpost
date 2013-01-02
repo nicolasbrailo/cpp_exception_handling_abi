@@ -1416,3 +1416,46 @@ Try the example again and voila, no more infinite loop! That was a simple change
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+<h2>C++ exceptions under the hood: finding the right stack frame</h2>
+
+
+
+
+
+
+
+
+
+
+[sourcecode language="cpp"]
+[/sourcecode]
+
+Note: A full libcxx ABI implementation can be found @ http://libcxxabi.llvm.org/spec.html
+
+
+We are now in a position to better answer why:
+ it's hard to write exception safe code,
+ it's complicated to understand complex exception conditions,
+ it's slow because a lot of voodoo is happening under the hood,
+ it's dangerous because improperly throwing an exception might call the unforgiving std::terminate
+
+Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ level stuff. Even for higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore. The instruction pointer get's changed by each landing pad, the stack is unwound in ways we can't control and a lot of magic happens under the hood.
+
+
+
+
+
+
+
