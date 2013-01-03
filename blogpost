@@ -1175,6 +1175,7 @@ Can we now improve it and make it handle the correct exception on the correct fr
 
 
 
+-------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: multiple landing pads &amp; the teachings of the guru</h2>
 
 After a lot of hard work, we finally got a working personality function. It will indiscriminately handle all exceptions but it does work. There is a big question we haven't answered yet: if we go back to the LSDA (language specific data area) we'll see something like this:
@@ -1251,12 +1252,13 @@ void foo() {
 
 The interesting fields now are start and len: in a function with multiple try/catch blocks we can know whether we should handle an exception by checking if the instruction pointer for the current frame is between start and start + len.
 
-That solves the mistery of how a function with multiple try/catch blocks can handle an exception but we still have another question: why are there three call sites when we only specified a single landing pad? The other three are places where an exception might be thrown so they get added as a possible place for cleanup actions or landing pads. If we learned anything from GOTW us anything it should be that exceptions can be thrown in the places we least expect.
+That solves the mistery of how a function with multiple try/catch blocks can handle an exception but we still have another question: why are there three call sites when we only specified a single landing pad? The other three are places where an exception might be thrown so they get added as a possible place for cleanup actions or landing pads. If we learned anything from GOTW us anything it should be that exceptions can be thrown in the places we least expect. There is an entry in the call site table for our throw because it's a block that might throw; the compiler also detected another three.
 
 Now that we know what the start and len fields do, let's change our personality function so the correct landing pad can handle the exception being thrown. Go ahead. My implementation for the next time.
 
 
-<h2>C++ exceptions under the hood: finding the right catch</h2>
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood: finding the right landing pad</h2>
 
 Last time we ended up with a personality function that can handle exceptions, but it does so only with the first landing pad of the first call frame in the stack. Let's improve that a little bit. In a TDD fashion we can first build a test for our ABI. Let's modify our test program, throw.cpp, to have two try/catch blocks:
 
@@ -1415,27 +1417,182 @@ Try the example again and voila, no more infinite loop! That was a simple change
 
 
 
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood: finding the right catch & stack frame</h2>
+
+Last time we implemented our personality function so it would be able to handle functions with more than one landing pad. We are now trying to make it recognize whether a certain landing pad can handle a specific exception, so we can use of the exception specification on the catch statement.
+
+Of course, to know whether a landing pad can handle a throw is a difficult task. Would you expect anything else? The biggest problems to overcome right now, though are these:
+
+<ul>
+    <li>First and foremost: how can we find the accepted types for a landing pad?</li>
+    <li>Assuming we can find the types for catch, how can we handle a catch(...)?</li>
+    <li>For a landing pad with multiple catch statements, how can we know all possibly catch types?</li>
+    <li>Take the following example:
+        [sourcecode language="cpp"]
+struct Base {};
+struct Child : public Base {};
+void foo() { throw Child; }
+
+void bar()
+{
+    try { foo(); }
+    catch(const Base&){ ... }
+}
+        [/sourcecode]
+        Not only we'll have to check whether the landing pad accepts the current exception, we'll have to check if it accepts any of the current exception parent's</li>
+</ul>
+
+To make our work a bit easier let's say for now we work only with landing pads that have a single catch and no inheritance exists on our program. Still, how do we find out the accepted types for a landing pad?
+
+Turns there is a place in .gcc_except_table we haven't analyzed yet: the action table. Let's dissasemble our throw.cpp object and see what's in there, right after the call site table is finished, for our "try but don't catch" function:
+
+[sourcecode]
+.LLSDACSE1:
+	.byte	0x1
+	.byte	0
+	.align 4
+	.long	_ZTI14Fake_Exception
+.LLSDATT1:
+[/sourcecode]
+
+Doesn't look like much, but there's a promissing pointer (both a proverbial and a real pointer) to something that has our exception's name. Let's go to the definition of _ZTI14Fake_Exception:
+
+[sourcecode]
+_ZTI14Fake_Exception:
+	.long	_ZTVN10__cxxabiv117__class_type_infoE+8
+	.long	_ZTS14Fake_Exception
+	.weak	_ZTS9Exception
+	.section	.rodata._ZTS9Exception,"aG",@progbits,_ZTS9Exception,comdat
+	.type	_ZTS9Exception, @object
+	.size	_ZTS9Exception, 11
+[/sourcecode]
+
+And we reached something very interesting. Can you recognize it? This is the std::type_info for struct Fake_Exception!
+
+Now we know there is indeed a way to get a pointer to some kind of reflexion information for our exception. Can we programmatically find it? We'll see next time.
+
+
+
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood: reflecting on an exception type and reading .gcc_except_table</h2>
+
+We left our ABI implementation last time, and dedicated some time to analyze the assembly for .gcc_except_table to discover how can we find the types a catch can handle. We found that indeed there is a part of this table that holds a list of types where this information can be found. Let's try to read it on the cleanup phase.
+
+Let's remember the definition for our LSDA header:
+
+[sourcecode language="cpp"]
+struct LSDA_Header {
+    uint8_t start_encoding;
+    uint8_t type_encoding;
+
+    // This is the offset, from the end of the header, to the types table
+    uint8_t type_table_offset;
+};
+[/sourcecode]
+
+That last field is new (for us): it's giving us an offset into table of types. Let's also remember the definition of each call site:
+
+[sourcecode language="cpp"]
+struct LSDA_CS {
+    // Offset into function from which we could handle a throw
+    uint8_t start;
+    // Length of the block that might throw
+    uint8_t len;
+    // Landing pad
+    uint8_t lp;
+    // Offset into action table + 1 (0 means no action)
+    uint8_t action;
+};
+[/sourcecode]
+
+Check that last field, "action". That gives us an offset into the action table. That means we can find the action for a specific CS. The trick here is that for landing pads where a catch exists, the action will hold an offset for the types table; we can then use the offset into the types table pointer, which we can get from the header. Quite a mouthful: let's better talk code:
+
+[sourcecode language="cpp"]
+// Pointer to the beginning of the raw LSDA
+LSDA_ptr lsda = (uint8_t*)_Unwind_GetLanguageSpecificData(context);
+
+// Read LSDA headerfor the LSDA
+LSDA_Header header(&lsda);
+
+const LSDA_ptr types_table_start = lsda + header.type_table_offset;
+
+// Read the LSDA CS header
+LSDA_CS_Header cs_header(&lsda);
+
+// Calculate where the end of the LSDA CS table is
+const LSDA_ptr lsda_cs_table_end = lsda + cs_header.length;
+
+// Get the start of action tables
+const LSDA_ptr action_tbl_start = lsda_cs_table_end;
+
+// Get the first call site
+LSDA_CS cs(&lsda);
+
+// cs.action is the offset + 1; that way cs.action == 0
+// means there is no associated entry in the action table
+const size_t action_offset = cs.action - 1;
+const LSDA_ptr action = action_tbl_start + action_offset;
+
+// For a landing pad with a catch the action table will
+// hold an index to a list of types
+int type_index = action[0];
+
+// types_table_start actually points to the end of the table, so
+// we need to invert the type_index. There we'll find a ptr to
+// the std::type_info for the specification in our catch
+const void* catch_type_info = types_table_start[ -1 * type_index ];
+const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
+
+// If everything went OK, this should print something like Fake_Exception
+printf("%s\n", catch_ti->name());
+[/sourcecode]
+
+The code looks complicated because there are several layers of indirection before actually reaching the struct type_info, but it's not really doing anything complicated: it only reads the .gcc_except_table we found on the dissasembly.
+
+Printing the name of the type is already a big step in the right direction.
+
+/////////// TODO: Link to version step_8
+
+Next time we'll see if we can match our newly found type to our original exception.
 
 
 
 
 
 
+.........
+
+We need first to know the exception type. To do this we need to save the exception type when <b>__cxa_throw</b> is called (this is the chance the ABI gives us to set all our custom data):
+
+
+[sourcecode language="cpp"]
+void __cxa_throw(void* thrown_exception,
+                 std::type_info *tinfo,
+                 void (*dest)(void*))
+{
+    __cxa_exception *header = ((__cxa_exception *) thrown_exception - 1);
+
+    // We need to save the type info in the exception header _Unwind_ will
+    // receive, otherwise we won't be able to know it when unwinding
+    header->exceptionType = tinfo;
+
+    _Unwind_RaiseException(&header->unwindHeader);
+}
+[/sourcecode]
+
+
+And now we can read the exception type in our personality function:
+
+[sourcecode language="cpp"]
+__cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+std::type_info *ex_type = exception_header->exceptionType;
+    printf("Got %s\n", ex_type->name());
+[/sourcecode]
 
 
 
-
-
-
-
-<h2>C++ exceptions under the hood: finding the right stack frame</h2>
-
-
-
-
-
-
-
+***************************************************
 
 
 
