@@ -1550,8 +1550,7 @@ printf("%s\n", catch_ti->name());
 
 The code looks complicated because there are several layers of indirection before actually reaching the struct type_info, but it's not really doing anything complicated: it only reads the .gcc_except_table we found on the dissasembly.
 
-Printing the name of the type is already a big step in the right direction.
-
+Printing the name of the type is already a big step in the right direction. Also, our personality function is getting a bit messy. Most of the complexity of reading the LSDA can be hidden under the rug for almost no cost at all. You can check my implementation here:
 /////////// TODO: Link to version step_8
 
 Next time we'll see if we can match our newly found type to our original exception.
