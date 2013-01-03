@@ -10,7 +10,7 @@ The first question we need to ask ourselves is then, how does it all work. This 
 	<li>If a matching catch is found, the unwinder now starts again on the top of the stack.</li>
 	<li>As the unwinder goes through the stack a second time it will ask the personality routine to perform a cleanup for this method.</li>
 	<li>The personality routine will check the cleanup table on the current method. If there are any cleanup actions to be run, it will "jump" into the current stack frame and run the cleanup code. This will run the destructor for each object allocated at the current scope.</li>
-	<li>Once the unwinder reaches the frame in the stack that can handle the exception if will jump into the proper catch statement.</li>
+	<li>Once the unwinder reaches the frame in the stack that can handle the exception it will jump into the proper catch statement.</li>
 	<li>Upon finishing the execution of the catch statement, a cleanup function will be called to release the memory held for the exception.</li>
 </ol>
 This already looks quite complicated and we haven't even started; that was but a short and inaccurate description of all the complexities needed to handle an exception.
@@ -18,9 +18,13 @@ This already looks quite complicated and we haven't even started; that was but a
 To learn about all the details that happen under the hood on the next article we will start to implement our own mini libstdlibc++. Not all of it though, only the part that handles exceptions. Actually not even all of that, only the bare minimum we need to make a simple throw/catch statement work. Some assembly will be needed, but nothing too fancy. A lot of patience will be required, I'm afraid.
 
 If you are too curious and want to start reading about exception handling implementation then you can start <a href="http://mentorembedded.github.com/cxx-abi/">here</a>, for a full specification of what we are going to implement on the next few articles. I'll try to make these articles a bit more didactic and easier to follow though, so see you next time to start our ABI!
+
 <h6>** Disclaimer note: I'm in no way versed on the magic going on when an exception is thrown. These series will be about trying to demystify the stuff going on under the hood and learning something in the process, and while I hope some of it will be correct I have no doubts there will be a lot of subtleties not quite right. Let me know if you think I should correct something **</h6>
+
+
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: a tiny ABI</h2>
+
 If we are going to try and understand why exceptions are complex and how do they work, we can either read a lot of manuals or we can try to write something to handle the exceptions ourselves. Actually, I was surprised by the lack of good information on this topic: pretty much everything I found is either incredibly detailed or very basic, with one exception or two. Of course there are some specifications to implement (most notably the <a href="http://mentorembedded.github.com/cxx-abi/">ABI for c++</a> but we also have <a href="http://www.logix.cz/michal/devel/gas-cfi/">CFI</a>, <a href="http://www.logix.cz/michal/devel/gas-cfi/dwarf-2.0.0.pdf">DWARF</a> and libstdc) but reading the specification alone is not enough to really learn what's going on under the hood.
 
 Let's start with the obvious then: wheel reinvention! We know for a fact that plain C doesn't handle exceptions, so let's try to link a throwing C++ program with a plain C linker and see what happens. I came up with something simple like this:
@@ -69,6 +73,8 @@ What happens now if we try to compile and link together this frankencode?
 > gcc -c -o main.o -O0 -ggdb main.c
 [/sourcecode]
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v01">in my github repo</a>.
+
 So far so good. Both g++ and gcc are happy in their little world. Chaos will ensue once we try to link them, though:
 
 [sourcecode language="bash"]
@@ -85,9 +91,13 @@ And sure enough, gcc complains about missing C++ symbols. Those are very special
 The C++ ABI defines a standard binary format so we can link objects together in a single program; if we compile a .o file with two different compilers, and those compilers use a different ABI, we won't be able to link the .o objects into an application. The ABI will also define some other formats, like for example the interface to perform stack unwinding or the throwing of an exception. In this case, the ABI defines an interface (not necessarily a binary format, just an interface) between C++ and some other library in our program which will handle the stack unwinding, ie the ABI defines C++ specific stuff so it can talk to non-C++ libraries: this is what would enable exceptions thrown from other languages to be caught in C++, amongst other things.
 
 In any case, the linker errors are pointing us to the first layer into exception handling under the hood: an interface we'll have to implement ourselves, the cxxabi. For the next article we'll be starting our own mini ABI, as defined in the <a href="http://mentorembedded.github.com/cxx-abi/">C++ ABI</a>.
+
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: an ABI to appease the linker</h2>
-On our journey to understand exceptions we discovered that the heavy-lifting is done in libstdc++ as specified by the C++ ABI. Reading some linker errors we deduced last time that for handling exceptions we need help from the C++ ABI; we created a throwing C++ program, linked it together with a plain C program and found that the compiler somehow translated our throw instruction into something that is now calling a few libstd++ functions to actually throw an exception. We want to understand exactly how an exception is thrown, so we will try to implement our own mini-ABI, capable of throwing an exception. To do this, a lot of <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">RTFM</a> is needed, but a full ABI interface can be found <a href="http://libcxxabi.llvm.org/spec.html">here, for LLVM</a>. Let's start by remembering what those missing functions are:
+
+On our journey to understand exceptions we discovered that the heavy-lifting is done in libstdc++ as specified by the C++ ABI. Reading some linker errors we deduced last time that for handling exceptions we need help from the C++ ABI; we created a throwing C++ program, linked it together with a plain C program and found that the compiler somehow translated our throw instruction into something that is now calling a few libstd++ functions to actually throw an exception. Lost already? You can check the sourcode for this project so far <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v01">in my github repo</a>.
+
+Anyway, we want to understand exactly how an exception is thrown, so we will try to implement our own mini-ABI, capable of throwing an exception. To do this, a lot of <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">RTFM</a> is needed, but a full ABI interface can be found <a href="http://libcxxabi.llvm.org/spec.html">here, for LLVM</a>. Let's start by remembering what those missing functions are:
 
 
 [sourcecode language="bash"]
@@ -149,7 +159,7 @@ void __cxa_throw(
 
 [/sourcecode]
 
-Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/step_1">in my github repo</a>.
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v01">in my github repo</a>.
 
 If we now compile mycppabi.cpp and link it with the other two .o files, we'll get a working binary which should print "alloc ex 1\nthrow" and then exit. Pretty simple, but an amazing feat nonetheless: we've managed to throw an exception without calling libc++. We've written a (very small) part of a C++ ABI!
 
@@ -237,6 +247,8 @@ extern "C" {
 }
 [/sourcecode]
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v02">in my github repo</a>.
+
 Just like before, we have our seppuku function linking the C world with the C++ world, only this time we have added some more function calls to make our stack more interesting, plus we have added a bunch of try/catch blocks so we can analyze how does libstdc++ handles them.
 
 And just like before, we get some linker errors about missing ABI functions:
@@ -266,6 +278,8 @@ What does the personality function do? We already said something about it on the
 <h2>C++ exceptions under the hood: magic around __cxa_begin_catch and __cxa_end_catch</h2>
 
 After learning how exceptions are thrown we are now on our way to learn how they are caught. Last time we added to our example application a bunch of try/catch statements to see what they did, and sure enough we got a bunch of linker errors, just like we did when we were trying to find out what does the throw statement do. This is what the linker says when trying to process throw.o:
+
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v02">in my github repo</a>.
 
 [sourcecode language="bash"]
 > g++ -c -o throw.o -O0 -ggdb throw.cpp
@@ -408,12 +422,9 @@ void __gxx_personality_v0()
 }
 [/sourcecode]
 
-And sure enough, when we run it we should see our personality function being called. We know we're on the right track and now we have an idea of what we want for our personality function; next time we'll start to implement it.
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v02">in my github repo</a>.
 
--------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood: implementing a personality</h2>
-
-We have seen how when trying to catch an exception we always end up going to the personality function; this is the place where _Unwind_ will call to check whether a function can handle an exception, and how it should be handled. To learn exactly how it works we are going to implement a (more or less) working personality function. Let's start by using the proper definition for this function:
+And sure enough, when we run it we should see our personality function being called. We know we're on the right track and now we have an idea of what we want for our personality function; let's start using the proper definition for this function:
 
 [sourcecode language="cpp"]
 _Unwind_Reason_Code __gxx_personality_v0 (
@@ -506,6 +517,8 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 
 }
 [/sourcecode]
+
+Code @ <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v02">my github repo</a>.
 
 Let's compile and link everything, then run it and start by analyzing each param to this function with some help of gdb:
 
@@ -637,6 +650,8 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 }
 [/sourcecode]
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v03">in my github repo</a>.
+
 Let's run it, see what happens:
 
 [sourcecode language="bash"]
@@ -665,8 +680,9 @@ How can we tell _Unwind_ where is our landing pad, so we can execute the code in
 	<li>_Unwind_GetIP, to get the instruction pointer inside the current stack frame (a pointer to the place where the function call to the next stack frame was done. It should be clearer with the example below).</li>
 </ul>
 
-
 Let's check these functions with gdb. On my machine:
+
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v04">in my github repo</a>.
 
 [sourcecode language="cpp"]
 Breakpoint 1, __gxx_personality_v0 (version=1, actions=6, exceptionClass=134515400, unwind_exception=0x804a060, context=0xbffff0f0)
@@ -728,6 +744,8 @@ Reading the CFI data can be rather straight forward, but there are a few pitfall
 2. Although the format itself is not terribly complicated, it uses a LEB encoding that makes reading this table not quite straightforward.
 
 As far as I know most DWARF data is encoded like this, using a <a href="http://en.wikipedia.org/wiki/LEB128">LEB format</a>, which seems to be great for confusing programmers and to save code space while encoding arbitrary lenght ints. Luckily, we can cheat a bit in here: most of the time the LEB encoded numbers will readble with a plain uint8_t, because we won't be dealing with large exception tables or anything like that.
+
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v04">in my github repo</a>.
 
 Let's start by analyzing the CFI data directly from the dissasembly, we'll then see if we can build something to read it on our personality function. I'll rename the lables to make them a bit more human-friendly. The LSDA will have three sections, try to spot them below:
 
@@ -911,6 +929,8 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 }
 [/sourcecode]
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v05">in my github repo</a>.
+
 As you can see if you run this code, all entries in the call site table are relative. Relative to what? To the start of function. That means that if we want to get the EIP for a specific landing pad all we have to do is _Unwind_GetRegionStart + LSDA_Call_Site.cs_lp!
 
 We should now be able to solve our exceptional problem: let's try to modify our personality function to run the correct landing pad. We'll now need to use another _Unwind_ function to specify where we want to resume execution: _Unwind_SetIP. Let's change the personality function again to run the first landing pad available, which by inspecting the assembly we already know is the one we want:
@@ -1022,7 +1042,7 @@ void __cxa_end_catch()
 
 
 
-/**********************************************/*************************************************************/
+/***********************************************************************/
 
 /**
  * The LSDA is a read only place in memory; we'll create a typedef for
@@ -1092,7 +1112,7 @@ struct LSDA_CS {
     uint8_t action;
 };
 
-/**********************************************/*************************************************************/
+/*********************************************************************/
 
 
 _Unwind_Reason_Code __gxx_personality_v0 (
@@ -1151,7 +1171,7 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 }
 [/sourcecode]
 
-Note: For a more detailed description of the LSDA tables check <a href="http://mentorembedded.github.com/cxx-abi/exceptions.pdf">here</a>.
+Note: For a more detailed description of the LSDA tables check <a href="http://mentorembedded.github.com/cxx-abi/exceptions.pdf">here</a> and for the full source code <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v06">check my github repo</a>.
 
 Finally, it worked. You should see something like this if you run it:
 
@@ -1222,6 +1242,7 @@ struct LSDA_CS {
 };
 [/sourcecode]
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v06">in my github repo</a>.
 
 Something very interesting is going on here, but lets first analyze this struct field by field with the following example:
 
@@ -1412,6 +1433,8 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 }
 [/sourcecode]
 
+As usual: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v07">in my github repo</a>.
+
 Try the example again and voila, no more infinite loop! That was a simple change and we can now choose the correct landing pad. Next time we'll try to make our personality function also pick the correct stack frame instead of choosing the first one.
 
 
@@ -1446,6 +1469,8 @@ void bar()
 To make our work a bit easier let's say for now we work only with landing pads that have a single catch and no inheritance exists on our program. Still, how do we find out the accepted types for a landing pad?
 
 Turns there is a place in .gcc_except_table we haven't analyzed yet: the action table. Let's dissasemble our throw.cpp object and see what's in there, right after the call site table is finished, for our "try but don't catch" function:
+
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v07">in my github repo</a>.
 
 [sourcecode]
 .LLSDACSE1:
@@ -1550,8 +1575,7 @@ printf("%s\n", catch_ti->name());
 
 The code looks complicated because there are several layers of indirection before actually reaching the struct type_info, but it's not really doing anything complicated: it only reads the .gcc_except_table we found on the dissasembly.
 
-Printing the name of the type is already a big step in the right direction. Also, our personality function is getting a bit messy. Most of the complexity of reading the LSDA can be hidden under the rug for almost no cost at all. You can check my implementation here:
-/////////// TODO: Link to version step_8
+Printing the name of the type is already a big step in the right direction. Also, our personality function is getting a bit messy. Most of the complexity of reading the LSDA can be hidden under the rug for almost no cost at all. You can check my <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v08">implementation here</a>
 
 Next time we'll see if we can match our newly found type to our original exception.
 
@@ -1564,6 +1588,7 @@ Our latest personality function knows whether if it can handle an exception or n
 
 Of course, we need first to know the exception type. To do this we need to save the exception type when <b>__cxa_throw</b> is called (this is the chance the ABI gives us to set all our custom data):
 
+Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">in my github repo</a>.
 
 [sourcecode language="cpp"]
 void __cxa_throw(void* thrown_exception,
@@ -1602,7 +1627,7 @@ if (org_ex_type->name() != catch_ti->name())
     continue;
 [/sourcecode]
 
-// Link to version 9
+Check <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">here</a> for the full source with the new changes.
 
 Of course there would be a problem if we add that (can you see it?). If the exception is thrown in two phases and we said in the first one we would handle it, then we can't say on the second one we don't want it anymore. I don't know if _Unwind_ handles this case according to any documentation but this is most likely calling upon undefined behaviour, so just saying we'll handle everything is no longer enough.
 
@@ -1611,11 +1636,7 @@ We'll try to fix our personality function next time by actually searching for a 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: getting the right stack frame</h2>
 
-Since we gave our personality function the ability to know if the landing pad can handle the exception being thrown we have been lying to _Unwind_ about which exceptions we can handle; even though we said we handle all of them on 
-
-///////////////// TODO link to ABI9
-
-<a href="">our ABI 9</a>, the truth is that we didn't know whether we would be able to handle it. That's easy to change, we can do something like this:
+Since we gave our personality function the ability to know if the landing pad can handle the exception being thrown we have been lying to _Unwind_ about which exceptions we can handle; even though we said we handle all of them on <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">our ABI 9</a>, the truth is that we didn't know whether we would be able to handle it. That's easy to change, we can do something like this:
 
 [sourcecode language="cpp"]
 _Unwind_Reason_Code __gxx_personality_v0 (...)
@@ -1643,6 +1664,8 @@ _Unwind_Reason_Code __gxx_personality_v0 (...)
 }
 [/sourcecode]
 
+As usual, check the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v10">in my github repo</a>.
+
 So, what would we get if we run the personality function with this change? Fail, that's what we'd get! Remember our throwing functions? This one should catch our exception:
 
 [sourcecode language="cpp"]
@@ -1661,13 +1684,15 @@ void catchit() {
 
 Unfortunatelly, our personality function only checks for the first type the landing pad can handle. If we delete the Fake_Exception catch block and try it again, though, we'd get a different story: finally, success! Our personality function can now select the correct catch in the correct frame, provided there's no try block with multiple catches.
 
-////////////////////////// TODO
-Link to the version 10 of the ABI.
-
 Can we improve this?
 
 
 ***************************************************
+
+
+
+
+
 
 
 
