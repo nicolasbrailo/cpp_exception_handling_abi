@@ -9,6 +9,12 @@ void raise() {
 
 void try_but_dont_catch() {
     try {
+        printf("Harmless try\n");
+    } catch(...) {
+        printf("A harmless try has thrown!\n");
+    }
+
+    try {
         raise();
     } catch(Fake_Exception&) {
         printf("Caught a Fake_Exception!\n");

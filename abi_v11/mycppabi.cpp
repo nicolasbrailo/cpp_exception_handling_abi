@@ -17,7 +17,6 @@ extern "C" {
 
 void* __cxa_allocate_exception(size_t thrown_size)
 {
-    printf("alloc ex %i\n", thrown_size);
     if (thrown_size > EXCEPTION_BUFF_SIZE) printf("Exception too big");
     return &exception_buff;
 }
@@ -52,8 +51,6 @@ void __cxa_throw(void* thrown_exception,
                  std::type_info *tinfo,
                  void (*dest)(void*))
 {
-    printf("__cxa_throw called\n");
-
     __cxa_exception *header = ((__cxa_exception *) thrown_exception - 1);
 
     // We need to save the type info in the exception header _Unwind_ will
@@ -440,7 +437,7 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                 int r1 = __builtin_eh_return_data_regno(1);
 
                 _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-                _Unwind_SetGR(context, r1, (uintptr_t)(cs->action - 1));
+                _Unwind_SetGR(context, r1, (uintptr_t)(action->type_index));
                 _Unwind_SetIP(context, func_start + cs->lp);
                 return _URC_INSTALL_CONTEXT;
             }
