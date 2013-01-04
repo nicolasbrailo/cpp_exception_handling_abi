@@ -83,6 +83,28 @@ void __cxa_end_catch()
 
 /**********************************************/
 
+int readSLEB128(const uint8_t* data)
+{
+    uintptr_t result = 0;
+    uintptr_t shift = 0;
+    unsigned char byte;
+    const uint8_t *p = data;
+    do
+    {
+        byte = *p++;
+        result |= static_cast<uintptr_t>(byte & 0x7F) << shift;
+        shift += 7;
+    } while (byte & 0x80);
+
+    if ((byte & 0x40) && (shift < (sizeof(result) << 3)))
+        result |= static_cast<uintptr_t>(~0) << shift;
+
+    return static_cast<int>(result);
+}
+
+
+
+
 /**
  * The LSDA is a read only place in memory; we'll create a typedef for
  * this to avoid a const mess later on; LSDA_ptr refers to readonly and
@@ -255,10 +277,86 @@ struct LSDA
      */
     const LSDA_ptr get_action_for_call_site(const Call_Site *cs) const
     {
-        if (cs->action == NULL) return NULL;
+        if (cs->action == 0) return NULL;
 
         const size_t action_offset = cs->action - 1;
         return this->action_tbl_start + action_offset;
+    }
+
+
+    /**
+     * An entry in the action table
+     */
+    struct Action {
+        // An index into the types table
+        int type_index;
+
+        // Offset for the next action, relative from this byte (this means
+        // that the next action will begin exactly at the address of
+        // &next_offset - next_offset itself
+        int next_offset;
+
+        // A pointer to the raw action, which we need to get the next
+        // action:
+        //   next_action_offset = raw_action_ptr[1]
+        //   next_action_ptr = &raw_action_ptr[1] + next_action_offset
+        LSDA_ptr raw_action_ptr;
+
+    } current_action;
+
+
+    /**
+     * Gets the first action for a specific call site
+     */
+    const Action* get_first_action_for_cs(const Call_Site *cs)
+    {
+        // The call site may have no associated action (in that case
+        // it should be a cleanup)
+        if (cs->action == 0) return NULL;
+
+        // The action in the CS is 1 based: 0 means no action and
+        // 1 is the element 0 on the action table
+        const size_t action_offset = cs->action - 1;
+        LSDA_ptr action_raw = this->action_tbl_start + action_offset;
+
+        current_action.type_index = action_raw[0];
+        current_action.next_offset = readSLEB128( &action_raw[1] );
+        current_action.raw_action_ptr = &action_raw[0];
+
+        return &current_action;
+    }
+
+    /**
+     * Gets the next action, if any, for a CS (after calling
+     * get_first_action_for_cs)
+     */
+    const Action* get_next_action() {
+        // If the current_action is the last one then the
+        // offset for the next one will be 0
+        if (current_action.next_offset == 0) return NULL;
+
+        // To move to the next action we must use raw_action_ptr + 1
+        // because the offset is from the next_offset place itself and
+        // not from the start of the struct:
+        LSDA_ptr action_raw = current_action.raw_action_ptr + 1 +
+                                        current_action.next_offset;
+
+        current_action.type_index = action_raw[0];
+        current_action.next_offset = readSLEB128( &action_raw[1] );
+        current_action.raw_action_ptr = &action_raw[0];
+
+        return &current_action;
+    }
+
+    /**
+     * Returns the type from the types table defined for an action
+     */
+    const std::type_info* get_type_for(const Action* action) const
+    {
+        // The index starts at the end of the types table
+        int idx = -1 * action->type_index;
+        const void* catch_type_info = this->types_table_start[idx];
+        return (const std::type_info *) catch_type_info;
     }
 };
 
@@ -266,25 +364,21 @@ struct LSDA
 /**********************************************/
 
 
-int readSLEB128(const uint8_t* data)
+bool can_handle(const std::type_info *thrown_exception,
+                const std::type_info *catch_type)
 {
-    uintptr_t result = 0;
-    uintptr_t shift = 0;
-    unsigned char byte;
-    const uint8_t *p = data;
-    do
-    {
-        byte = *p++;
-        result |= static_cast<uintptr_t>(byte & 0x7F) << shift;
-        shift += 7;
-    } while (byte & 0x80);
+    // If the catch has no type specifier we're dealing with a catch(...)
+    // and we can handle this exception regardless of what it is
+    if (not catch_type) return true;
 
-    if ((byte & 0x40) && (shift < (sizeof(result) << 3)))
-        result |= static_cast<uintptr_t>(~0) << shift;
+    // Naive type comparisson: only check if the type name is the same
+    // This won't work with any kind of inheritance
+    if (thrown_exception->name() == catch_type->name())
+        return true;
 
-    return static_cast<int>(result);
+    // If types don't match just don't handle the exception
+    return false;
 }
-
 
 
 _Unwind_Reason_Code __gxx_personality_v0 (
@@ -294,8 +388,6 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                              _Unwind_Exception* unwind_exception,
                              _Unwind_Context* context)
 {
-    printf("Personality function, searching for handler\n");
-
     // Calculate what the instruction pointer was just before the
     // exception was thrown for this stack frame
     uintptr_t throw_ip = _Unwind_GetIP(context) - 1;
@@ -304,6 +396,10 @@ _Unwind_Reason_Code __gxx_personality_v0 (
     // this is needed because a lot of the addresses in the LSDA are
     // actually offsets from func_start
     uintptr_t func_start = _Unwind_GetRegionStart(context);
+
+    // Get a pointer to the type_info of the exception being thrown
+    __cxa_exception *exception_header =(__cxa_exception*)(unwind_exception+1)-1;
+    std::type_info *thrown_exception_type = exception_header->exceptionType;
 
     // Get a pointer to the raw memory address of the LSDA
     LSDA_ptr raw_lsda = (LSDA_ptr) _Unwind_GetLanguageSpecificData(context);
@@ -325,50 +421,15 @@ _Unwind_Reason_Code __gxx_personality_v0 (
         // the IP for this stack frame must be in this range
         if (not cs->valid_for_throw_ip(func_start, throw_ip)) continue;
 
-        // If the call site has no action then it can't handle the
-        // exception and we're not interested
-        if (cs->action == 0) continue;
+        // Iterate all the actions for this call site
+        for (const LSDA::Action* action = lsda.get_first_action_for_cs(cs);
+                action != NULL;
+                action = lsda.get_next_action())
+        {
+            // Get the types this action can handle
+            const std::type_info *catch_type = lsda.get_type_for(action);
 
-        // Get the offset into the action table for this LP
-        // cs->action is the offset + 1; that way cs->action == 0
-        // means there is no associated entry in the action table
-        const size_t action_offset = cs->action - 1;
-        LSDA_ptr action = lsda.get_action_for_call_site(cs);
-
-        // Get the type of the original exception being thrown
-        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
-        std::type_info *org_ex_type = exception_header->exceptionType;
-
-        // For a landing pad with a catch the action table will
-        // hold an index to a list of types
-        int type_index = action[0];
-        int next_offset;
-
-        do {
-            const void* catch_type_info = lsda.types_table_start[ -1 * type_index ];
-            const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
-
-            if (catch_ti == NULL)
-            {
-                printf("LP can catch everything.\n");
-
-                // If we are on search phase, tell _Unwind_ we can handle this one
-                if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
-
-                // If we are not on search phase then we are on _UA_CLEANUP_PHASE
-                // and we need to install the context
-                int r0 = __builtin_eh_return_data_regno(0);
-                int r1 = __builtin_eh_return_data_regno(1);
-
-                _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-                _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
-                _Unwind_SetIP(context, func_start + cs->lp);
-                return _URC_INSTALL_CONTEXT;
-            }
-
-            printf("LP can catch %s.\n", catch_ti->name());
-
-            if (org_ex_type->name() == catch_ti->name())
+            if (can_handle(catch_type, thrown_exception_type))
             {
                 // If we are on search phase, tell _Unwind_ we can handle this one
                 if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
@@ -379,18 +440,11 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                 int r1 = __builtin_eh_return_data_regno(1);
 
                 _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-                _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
+                _Unwind_SetGR(context, r1, (uintptr_t)(cs->action - 1));
                 _Unwind_SetIP(context, func_start + cs->lp);
                 return _URC_INSTALL_CONTEXT;
             }
-
-            next_offset = readSLEB128(& action[1]);
-
-            if (next_offset) {
-                action = (&action[1]) + next_offset;
-                type_index = action[0];
-            }
-        } while (next_offset);
+        }
     }
 
     return _URC_CONTINUE_UNWIND;
