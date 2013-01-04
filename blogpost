@@ -1683,11 +1683,10 @@ void catchit() {
 
 Unfortunatelly, our personality function only checks for the first type the landing pad can handle. If we delete the Fake_Exception catch block and try it again, though, we'd get a different story: finally, success! Our personality function can now select the correct catch in the correct frame, provided there's no try block with multiple catches.
 
-Can we improve this? Maybe next time.
+Next time we'll be imrpoving this.
 
 
-***************************************************
-
+-------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: getting the right catch in a landing pad</h2>
 
 ........
@@ -1740,30 +1739,86 @@ It sounds complicated because there's, again, a lot of indirection for each step
 
 In the link above you will also see a bonus: a change to the personality function to correctly detect and use catch(...) blocks. That's an easy change once the personality functions knows how to read the types table: a type with a null pointer (ie a position in the table that instead of a valid pointer to an std::type_info holds null) represents a catch all block. This has an interesting side effect: a catch(T) will be able to handle only native (ie comming from C++) exceptions, whereas a catch(...) would catch also exceptions not thrown from within C++.
 
+...............
 
 
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood: running destructors while unwinding</h2>
 
+...............
 
+With what we know about .gcc_except_table running destructors is a piece of cake, we only need to see a bit of assembly:
 
+[sourcecode]
+# Call site table
+.LLSDACSB2:
+    # Call site 1
+	.uleb128 ip_range_start
+	.uleb128 ip_range_len
+	.uleb128 landing_pad_ip
+	.uleb128 (action_offset+1) => 0x3
+    
+    # Rest of call site table
 
+# Action table start
+.LLSDACSE2:
+    # Action 1
+	.byte	0
+	.byte	0
 
-[sourcecode language="cpp"]
+    # Action 2
+	.byte	0x1
+	.byte	0x7d
+
+	.align 4
+	.long	_ZTI14Fake_Exception
+.LLSDATT2:
+# Types table start
 [/sourcecode]
 
-Note: A full libcxx ABI implementation can be found @ http://libcxxabi.llvm.org/spec.html
+On a regular landing pad, when an action has a type index of 0 it means we are seeing a cleanup block and we should run it anyway. Although the landing pad can't handle the exception it will still be able to perform the cleanup that's supposed to happen while unwinding. Of course the landing pad will call _Unwind_Resume when the cleanup is done.
 
+I've uploaded this <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v12">latest and last version to my github repo</a>, but there are some bad news: remember how we cheated by saying that a uleb128 == char? As soon as we start adding blocks to run destructors the .gcc_except_table starts to get quite big and that assumption no longer holds.
 
-We are now in a position to better answer why:
- it's hard to write exception safe code,
- it's complicated to understand complex exception conditions,
- it's slow because a lot of voodoo is happening under the hood,
- it's dangerous because improperly throwing an exception might call the unforgiving std::terminate
+For the next version of this ABI we would have to rewrite our LSDA reading functions to read proper uleb128 code. Not a major change, but at this point we wouldn't gain much, we have already achieved our goal: a working minimal ABI capable of handling exceptions without the help of libcxxabi.
 
-Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ level stuff. Even for higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore. The instruction pointer get's changed by each landing pad, the stack is unwound in ways we can't control and a lot of magic happens under the hood.
+There are parts we haven't covered investigated, like handling non-native exceptions or interoperability between compilers and linkers. Maybe some other time, in this rather long series of articles we did learn quite a bit about low level exception handling in C++. 
 
 
 
 
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood: a summary and some final thougths</h2>
 
+After writing twenty some articles about C++ low level exception handling, it's time for a recap and some final thoughs. What have we learned so far and how is an exception thrown?
+
+Leaving asside the nitty and gritty details of reading the .gcc_except_table, which were probably the biggest part of this article, we could summarize the whole process like this:
+
+<ol>
+    <li>In reality the C++ compiler does rather little to handle an exception, most of the magic actually happens in libstdc++.</li>
+    <li>There are a few things the compiler does indeed do, though. Namely:
+    <ul>
+        <li>It creates the CFI information to unwind the stack.</li>
+        <li>It creates something called .gcc_except_table with information about landing pads (try/catch blocks). Kind of like reflexion info.</li>
+        <li>When we write a throw statement, the compiler will translate it into a pair of calls into libstdc++ functions that allocate the exception and then start the stack unwinding process by calling libstdc.</li>
+    </ul>
+    </li>
+    <li>When an exception is thrown at runtime __cxa_throw will be called, which will delegate the stack unwinding to libstdc.</li>
+	<li>As the unwinder goes through the stack it will call a special function provided by libstdc++ (called personality routine) that checks for each function in the stack which exceptions can be caught.</li>
+	<li> If no matching catch is found for the exception, std::terminate is called.</li>
+	<li>If a matching catch is found, the unwinder now starts again on the top of the stack.</li>
+	<li>As the unwinder goes through the stack a second time it will ask the personality routine to perform a cleanup for this method.</li>
+	<li>The personality routine will check the .gcc_except_table for the current method. If there are any cleanup actions to be run, it will "jump" into the current stack frame and run the cleanup code. This will run the destructor for each object allocated at the current scope.</li>
+	<li>Once the unwinder reaches the frame in the stack that can handle the exception it will jump into the proper catch statement.</li>
+	<li>Upon finishing the execution of the catch statement, a cleanup function will be called to release the memory held for the exception.</li>
+</ol>
+
+Having learned how exceptions work we are now in a position to better answer why: it's hard to write exception safe code, it's complicated to understand complex exception conditions, it's slow because a lot of voodoo is happening under the hood and  it's dangerous because improperly throwing an exception might call the unforgiving std::terminate.
+
+Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ level stuff.
+
+Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With exceptions this no longer holds true, an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer get's changed by each landing pad, the stack is unwound in ways we can't control and, ultimately, a lot of magic happens under the hood.
+
+To summarize it even more: exceptions are hard simply because they break the natural flow of a program as we understand it. This does not mean they are intrinsically bad as properly used exceptions can surely lead to cleaner code, but they should always be used with care.
 
 
