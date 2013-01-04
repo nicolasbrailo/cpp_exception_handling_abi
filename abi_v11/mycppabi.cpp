@@ -327,7 +327,7 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                     int r1 = __builtin_eh_return_data_regno(1);
 
                     _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-                    _Unwind_SetGR(context, r1, (uintptr_t)(cs->action));
+                    _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
 
                     _Unwind_SetIP(context, func_start + cs->lp);
 

@@ -1582,7 +1582,7 @@ Next time we'll see if we can match our newly found type to our original excepti
 
 
 -------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood: retrieving the original exception</h2>
+<h2>C++ exceptions under the hood: getting the right stack frame</h2>
 
 Our latest personality function knows whether if it can handle an exception or not (assuming there is only one catch statement per try block and assuming no inheritance is used) but to make this knowledge useful, we have first to check if the exception we can handle matches the exception being thrown. Let's try to do this.
 
@@ -1630,11 +1630,6 @@ if (org_ex_type->name() != catch_ti->name())
 Check <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">here</a> for the full source with the new changes.
 
 Of course there would be a problem if we add that (can you see it?). If the exception is thrown in two phases and we said in the first one we would handle it, then we can't say on the second one we don't want it anymore. I don't know if _Unwind_ handles this case according to any documentation but this is most likely calling upon undefined behaviour, so just saying we'll handle everything is no longer enough.
-
-We'll try to fix our personality function next time by actually searching for a landing pad before saying it will handle an exception.
-
--------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood: getting the right stack frame</h2>
 
 Since we gave our personality function the ability to know if the landing pad can handle the exception being thrown we have been lying to _Unwind_ about which exceptions we can handle; even though we said we handle all of them on <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">our ABI 9</a>, the truth is that we didn't know whether we would be able to handle it. That's easy to change, we can do something like this:
 
@@ -1684,7 +1679,7 @@ void catchit() {
 
 Unfortunatelly, our personality function only checks for the first type the landing pad can handle. If we delete the Fake_Exception catch block and try it again, though, we'd get a different story: finally, success! Our personality function can now select the correct catch in the correct frame, provided there's no try block with multiple catches.
 
-Can we improve this?
+Can we improve this? Maybe next time.
 
 
 ***************************************************
