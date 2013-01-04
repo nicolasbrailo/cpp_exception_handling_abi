@@ -1684,6 +1684,58 @@ Can we improve this? Maybe next time.
 
 ***************************************************
 
+<h2>C++ exceptions under the hood: getting the right catch in a landing pad</h2>
+
+........
+
+So far our personality function can choose the right landing pad on the right stack frame to handle an exception, but it was having some difficulties to find the right catch inside a landing pad. To finally get a decently working personality function we'll need to check all the types an exception can handle by going through all the actions table in the .gcc_except_table.
+
+Remember the action table? Let's check it again but this time for a try with multiple catch blocks.
+
+[sourcecode]
+# Call site table
+.LLSDACSB2:
+    # Call site 1
+	.uleb128 ip_range_start
+	.uleb128 ip_range_len
+	.uleb128 landing_pad_ip
+	.uleb128 (action_offset+1) => 0x3
+    
+    # Rest of call site table
+
+# Action table start
+.LLSDACSE2:
+    # Action 1
+	.byte	0x2
+	.byte	0
+
+    # Action 2
+	.byte	0x1
+	.byte	0x7d
+
+	.align 4
+	.long	_ZTI9Exception
+	.long	_ZTI14Fake_Exception
+.LLSDATT2:
+# Types table start
+[/sourcecode]
+
+If we intend to read the exceptions supported by the landing pad 1 in the example above (that LSDA is for the catchit function, by the way) we need to do something like this:
+
+<ul>
+    <li>Get the action offset from the call site table, 2: remember you'll actually read the offset plus 1, so 0 means no action.</li>
+    <li>Go to action offset 2, get type index 1</li>
+    <li>Go to types_table[-1]; you'll get a pointer to the type_info for Fake_Exception</li>
+    <li>Fake_Exception is not the current exception being thrown; get the next action offset for our current action (0x7d)</li>
+    <li>Reading 0x7d in uleb128 will actually yield -3; from the position where we read the offset move back 3 bytes to find the next action</li>
+    <li>Read type index 2</li>
+    <li>Get the type_info for Exception this time; it matches the current exception being thrown, so we can install the landing pad!</li>
+</ul>
+
+It sounds complicated because there's, again, a lot of indirection for each step but you can check the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v11">in my github repo</a>.
+
+In the link above you will also see a bonus: a change to the personality function to correctly detect and use catch(...) blocks. That's an easy change once the personality functions knows how to read the types table: a type with a null pointer (ie a position in the table that instead of a valid pointer to an std::type_info holds null) represents a catch all block. This has an interesting side effect: a catch(T) will be able to handle only native (ie comming from C++) exceptions, whereas a catch(...) would catch also exceptions not thrown from within C++.
+
 
 
 

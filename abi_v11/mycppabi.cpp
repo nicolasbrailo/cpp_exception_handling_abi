@@ -114,31 +114,31 @@ struct LSDA_Header {
     uint8_t type_table_offset;
 };
 
-struct LSDA_CS_Header {
+struct Call_Site_Header {
     // Same as other LSDA constructors
-    LSDA_CS_Header(LSDA_ptr *lsda) {
+    Call_Site_Header(LSDA_ptr *lsda) {
         LSDA_ptr read_ptr = *lsda;
         encoding = read_ptr[0];
         length = read_ptr[1];
-        *lsda = read_ptr + sizeof(LSDA_CS_Header);
+        *lsda = read_ptr + sizeof(Call_Site_Header);
     }
 
     uint8_t encoding;
     uint8_t length;
 };
 
-struct LSDA_CS {
+struct Call_Site {
     // Same as other LSDA constructors
-    LSDA_CS(LSDA_ptr *lsda) {
+    Call_Site(LSDA_ptr *lsda) {
         LSDA_ptr read_ptr = *lsda;
         start = read_ptr[0];
         len = read_ptr[1];
         lp = read_ptr[2];
         action = read_ptr[3];
-        *lsda = read_ptr + sizeof(LSDA_CS);
+        *lsda = read_ptr + sizeof(Call_Site);
     }
 
-    LSDA_CS() { }
+    Call_Site() { }
 
     // Note start, len and lp would be void*'s, but they are actually relative
     // addresses: start and lp are relative to the start of the function, len
@@ -153,6 +153,30 @@ struct LSDA_CS {
     // Offset into action table + 1 (0 means no action)
     // Used to run destructors
     uint8_t action;
+
+    bool has_landing_pad() const { return lp; }
+
+    /**
+     * Returns true if the instruction pointer for this call frame
+     * (throw_ip) is in the range of the landing pad for this call
+     * site; if true that means the exception was thrown from within
+     * this try/catch block
+     */
+    bool valid_for_throw_ip(uintptr_t func_start, uintptr_t throw_ip) const
+    {
+        // Calculate the range of the instruction pointer valid for this
+        // landing pad; if this LP can handle the current exception then
+        // the IP for this stack frame must be in this range
+        uintptr_t try_start = func_start + this->start;
+        uintptr_t try_end = func_start + this->start + this->len;
+
+        // Check if this is the correct LP for the current try block
+        if (throw_ip < try_start) return false;
+        if (throw_ip > try_end) return false;
+
+        // The current exception was thrown from this landing pad
+        return true;
+    }
 };
 
 /**
@@ -169,7 +193,7 @@ struct LSDA
 
     // With the call site header we can calculate the lenght of the
     // call site table
-    LSDA_CS_Header cs_header;
+    Call_Site_Header cs_header;
 
     // A pointer to the start of the call site table
     const LSDA_ptr cs_table_start;
@@ -205,10 +229,10 @@ struct LSDA
     }
    
 
-    LSDA_CS next_cs_entry;
+    Call_Site next_cs_entry;
     LSDA_ptr next_cs_entry_ptr;
 
-    const LSDA_CS* next_call_site_entry(bool start=false)
+    const Call_Site* next_call_site_entry(bool start=false)
     {
         if (start) next_cs_entry_ptr = cs_table_start;
 
@@ -216,12 +240,25 @@ struct LSDA
         if (next_cs_entry_ptr >= cs_table_end)
             return NULL;
 
-        // Copy the call site table and advance the cursor by sizeof(LSDA_CS).
+        // Copy the call site table and advance the cursor by sizeof(Call_Site).
         // We need to copy the struct here because there might be alignment
         // issues otherwise
-        next_cs_entry = LSDA_CS(&next_cs_entry_ptr);
+        next_cs_entry = Call_Site(&next_cs_entry_ptr);
 
         return &next_cs_entry;
+    }
+
+
+    /**
+     * Returns a pointer to the action entry for a call site entry or
+     * null if the CS has no action
+     */
+    const LSDA_ptr get_action_for_call_site(const Call_Site *cs) const
+    {
+        if (cs->action == NULL) return NULL;
+
+        const size_t action_offset = cs->action - 1;
+        return this->action_tbl_start + action_offset;
     }
 };
 
@@ -263,6 +300,11 @@ _Unwind_Reason_Code __gxx_personality_v0 (
     // exception was thrown for this stack frame
     uintptr_t throw_ip = _Unwind_GetIP(context) - 1;
 
+    // Get a ptr to the start of the function for this stack frame;
+    // this is needed because a lot of the addresses in the LSDA are
+    // actually offsets from func_start
+    uintptr_t func_start = _Unwind_GetRegionStart(context);
+
     // Get a pointer to the raw memory address of the LSDA
     LSDA_ptr raw_lsda = (LSDA_ptr) _Unwind_GetLanguageSpecificData(context);
 
@@ -271,81 +313,84 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 
     // Go through each call site in this stack frame to check whether
     // the current exception can be handled here
-    for(const LSDA_CS *cs = lsda.next_call_site_entry(true);
+    for(const Call_Site *cs = lsda.next_call_site_entry(true);
             cs != NULL;
             cs = lsda.next_call_site_entry())
     {
         // If there's no landing pad we can't handle this exception
-        if (not cs->lp) continue;
-
-        uintptr_t func_start = _Unwind_GetRegionStart(context);
+        if (not cs->has_landing_pad()) continue;
 
         // Calculate the range of the instruction pointer valid for this
         // landing pad; if this LP can handle the current exception then
         // the IP for this stack frame must be in this range
-        uintptr_t try_start = func_start + cs->start;
-        uintptr_t try_end = func_start + cs->start + cs->len;
+        if (not cs->valid_for_throw_ip(func_start, throw_ip)) continue;
 
-        // Check if this is the correct LP for the current try block
-        if (throw_ip < try_start) continue;
-        if (throw_ip > try_end) continue;
+        // If the call site has no action then it can't handle the
+        // exception and we're not interested
+        if (cs->action == 0) continue;
 
         // Get the offset into the action table for this LP
-        if (cs->action > 0)
-        {
-            // cs->action is the offset + 1; that way cs->action == 0
-            // means there is no associated entry in the action table
-            const size_t action_offset = cs->action - 1;
-            LSDA_ptr action = lsda.action_tbl_start + action_offset;
+        // cs->action is the offset + 1; that way cs->action == 0
+        // means there is no associated entry in the action table
+        const size_t action_offset = cs->action - 1;
+        LSDA_ptr action = lsda.get_action_for_call_site(cs);
 
-            // Get the type of the original exception being thrown
-            __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
-            std::type_info *org_ex_type = exception_header->exceptionType;
+        // Get the type of the original exception being thrown
+        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+        std::type_info *org_ex_type = exception_header->exceptionType;
 
-            // For a landing pad with a catch the action table will
-            // hold an index to a list of types
-            int type_index = action[0];
-            int next_offset;
+        // For a landing pad with a catch the action table will
+        // hold an index to a list of types
+        int type_index = action[0];
+        int next_offset;
 
-            do {
-                const void* catch_type_info = lsda.types_table_start[ -1 * type_index ];
-                const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
-                printf("LP can catch %s.\n", catch_ti->name());
+        do {
+            const void* catch_type_info = lsda.types_table_start[ -1 * type_index ];
+            const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
 
-                if (org_ex_type->name() == catch_ti->name())
-                {
-                    printf("Found match!\n");
+            if (catch_ti == NULL)
+            {
+                printf("LP can catch everything.\n");
 
-                    // If we are on search phase, tell _Unwind_ we can handle this one
-                    if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
+                // If we are on search phase, tell _Unwind_ we can handle this one
+                if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
 
-                    printf("Install context!\n");
+                // If we are not on search phase then we are on _UA_CLEANUP_PHASE
+                // and we need to install the context
+                int r0 = __builtin_eh_return_data_regno(0);
+                int r1 = __builtin_eh_return_data_regno(1);
 
-                    // If we are not on search phase then we are on _UA_CLEANUP_PHASE
-                    // and we need to install the context
-                    int r0 = __builtin_eh_return_data_regno(0);
-                    int r1 = __builtin_eh_return_data_regno(1);
+                _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
+                _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
+                _Unwind_SetIP(context, func_start + cs->lp);
+                return _URC_INSTALL_CONTEXT;
+            }
 
-                    _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-                    _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
+            printf("LP can catch %s.\n", catch_ti->name());
 
-                    _Unwind_SetIP(context, func_start + cs->lp);
+            if (org_ex_type->name() == catch_ti->name())
+            {
+                // If we are on search phase, tell _Unwind_ we can handle this one
+                if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
 
-                    printf("Bye!\n");
-                    return _URC_INSTALL_CONTEXT;
-                }
+                // If we are not on search phase then we are on _UA_CLEANUP_PHASE
+                // and we need to install the context
+                int r0 = __builtin_eh_return_data_regno(0);
+                int r1 = __builtin_eh_return_data_regno(1);
 
-                next_offset = readSLEB128(& action[1]);
+                _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
+                _Unwind_SetGR(context, r1, (uintptr_t)(action_offset));
+                _Unwind_SetIP(context, func_start + cs->lp);
+                return _URC_INSTALL_CONTEXT;
+            }
 
-                if (next_offset) {
-                    action = (&action[1]) + next_offset;
-                    type_index = action[0];
-                }
-            } while (next_offset);
-        }
+            next_offset = readSLEB128(& action[1]);
 
-        // We found a landing pad for this exception; resume execution
-
+            if (next_offset) {
+                action = (&action[1]) + next_offset;
+                type_index = action[0];
+            }
+        } while (next_offset);
     }
 
     return _URC_CONTINUE_UNWIND;
