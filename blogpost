@@ -1,7 +1,7 @@
 <h2>C++ exceptions under the hood</h2>
-The fact that correct exception handling is hard is common knowledge. Reasons abound, in every single layer of an exception "lifetime": it's hard to write exception safe code, it's complicated to understand complex exception conditions, it's slow because a lot of voodoo is happening under the hood, it's dangerous because improperly throwing an exception might call the unforgiving std::terminate. And although anyone who might have had to battle an "exceptional" program might know this, the reasons for this mess are not widespread knowledge.
+Everyone knows that good exception handling is hard. Reasons for this abound, in every single layer of an exception "lifetime": it's hard to write exception safe code, it's complicated to understand complex exception conditions, it's slow because a lot of voodoo is happening under the hood, it's dangerous because improperly throwing an exception might call the unforgiving std::terminate. And although anyone who might have had to battle an "exceptional" program might know this, the reasons for this mess are not widespread knowledge.
 
-The first question we need to ask ourselves is then, how does it all work. This is the first article on a long series, in which I'll be writing about how exceptions are implemented under the hood in c++ (actually, c++ compiled with gcc on x86 platforms). During this series all the process of throwing and catching an exception will be explained with quite a lot of detail, but for the impatient people here is a small brief of all the articles that will follow: how is an exception thrown in gcc/x86:
+The first question we need to ask ourselves is then, how does it all work. This is the first article on a long series, in which I'll be writing about how exceptions are implemented under the hood in c++ (actually, c++ compiled with gcc on x86 platforms but this might apply to other platforms too). During this series all the process of throwing and catching an exception will be explained with quite a lot of detail, but for the impatient people here is a small brief of all the articles that will follow: how is an exception thrown in gcc/x86:
 <ol>
 	<li>When we write a throw statement, the compiler will translate it into a pair of calls into libstdc++ functions that allocate the exception and then start the stack unwinding process by calling libstdc.</li>
 	<li>For each catch statement, the compiler will write some special information after the method's body, a table of exceptions this method can catch and a cleanup table (more on the cleanup table later).</li>
@@ -86,7 +86,7 @@ throw.o:(.rodata._ZTI9Exception[typeinfo for Exception]+0x0): undefined referenc
 collect2: ld returned 1 exit status
 [/sourcecode]
 
-And sure enough, gcc complains about missing C++ symbols. Those are very special C++ symbols, though. Check the last error line: a vtable for cxxabiv1 is missing. cxxabi, defined in libstdc++, refers to the application binary interface for C++. So now we have learned that the exception handling is done with some help of the C++ ABI.
+And sure enough, gcc complains about missing C++ symbols. Those are very special C++ symbols, though. Check the last error line: a vtable for cxxabiv1 is missing. cxxabi, defined in libstdc++, refers to the application binary interface for C++. So now we have learned that the exception handling is done with some help of the standard C++ library with an interface defined by C++'s ABI.
 
 The C++ ABI defines a standard binary format so we can link objects together in a single program; if we compile a .o file with two different compilers, and those compilers use a different ABI, we won't be able to link the .o objects into an application. The ABI will also define some other formats, like for example the interface to perform stack unwinding or the throwing of an exception. In this case, the ABI defines an interface (not necessarily a binary format, just an interface) between C++ and some other library in our program which will handle the stack unwinding, ie the ABI defines C++ specific stuff so it can talk to non-C++ libraries: this is what would enable exceptions thrown from other languages to be caught in C++, amongst other things.
 
@@ -579,8 +579,10 @@ Remember the action parameter? That's how _Unwind_ tells us what he is expecting
 </ul>
 
 There are two important bits of information to note here:
-1. Running a two-phase exception handling procedure means that in case no handler was found then the default exception handler can get the original exception's stack trace (if we were to unwind the stack as we go it would get no stack trace, or we would need to keep a copy of it somehow!).
-2. Running a _UA_CLEANUP_PHASE and calling a second time each frame, even though we already know the frame that will handle the exception, is also really important: the personality function will take this chance to run all the destructors for objects built on this scope. It is what makes RAII an exception safe idiom!
+<ol>
+    <li>Running a two-phase exception handling procedure means that in case no handler was found then the default exception handler can get the original exception's stack trace (if we were to unwind the stack as we go it would get no stack trace, or we would need to keep a copy of it somehow!).</li>
+    <li>Running a _UA_CLEANUP_PHASE and calling a second time each frame, even though we already know the frame that will handle the exception, is also really important: the personality function will take this chance to run all the destructors for objects built on this scope. It is what makes RAII an exception safe idiom!</li>
+</ol>
 
 Now that we understand how the catch lookup phase works we can continue our personality function implementation. The next time.
 
@@ -1776,13 +1778,13 @@ With what we know about .gcc_except_table running destructors is a piece of cake
 # Types table start
 [/sourcecode]
 
-On a regular landing pad, when an action has a type index of 0 it means we are seeing a cleanup block and we should run it anyway. Although the landing pad can't handle the exception it will still be able to perform the cleanup that's supposed to happen while unwinding. Of course the landing pad will call _Unwind_Resume when the cleanup is done.
+On a regular landing pad, when an action has a type index greater than 0 it means we're seeing an index to a type tables, and we can use that to know which types the catch can handle; for a type index with a value of 0 it means we are instead seeing a cleanup block and we should run it anyway. Although the landing pad can't handle the exception it will still be able to perform the cleanup that's supposed to happen while unwinding. Of course the landing pad will call _Unwind_Resume when the cleanup is done and that will continue the regular stack unwinding process.
 
-I've uploaded this <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v12">latest and last version to my github repo</a>, but there are some bad news: remember how we cheated by saying that a uleb128 == char? As soon as we start adding blocks to run destructors the .gcc_except_table starts to get quite big and that assumption no longer holds.
+I've uploaded this <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v12">latest and last version to my github repo</a>, but there are some bad news: remember how we cheated by saying that a uleb128 == char? As soon as we start adding blocks to run destructors the .gcc_except_table starts to get quite big (where "big" means we have offsets over 127 bytes long) and that assumption no longer holds.
 
 For the next version of this ABI we would have to rewrite our LSDA reading functions to read proper uleb128 code. Not a major change, but at this point we wouldn't gain much, we have already achieved our goal: a working minimal ABI capable of handling exceptions without the help of libcxxabi.
 
-There are parts we haven't covered investigated, like handling non-native exceptions or interoperability between compilers and linkers. Maybe some other time, in this rather long series of articles we did learn quite a bit about low level exception handling in C++. 
+There are parts we haven't covered, like handling non-native exceptions or interoperability between compilers and linkers. Maybe some other time, in this rather long series of articles we did learn quite a bit about low level exception handling in C++. 
 
 
 
@@ -1820,5 +1822,26 @@ Exceptions, while conceptually rather clean, are pretty much "spooky action at a
 Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With exceptions this no longer holds true, an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer get's changed by each landing pad, the stack is unwound in ways we can't control and, ultimately, a lot of magic happens under the hood.
 
 To summarize it even more: exceptions are hard simply because they break the natural flow of a program as we understand it. This does not mean they are intrinsically bad as properly used exceptions can surely lead to cleaner code, but they should always be used with care.
+
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood apendinx: throwing and noexcept</h2>
+
+If no except is specified std::terminate is called by the abi....
+
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood apendinx: the cost of an exception</h2>
+
+Remember that a long way back, when the series on exception handling was just started, I mentioned this series would only apply for gcc/x86? There is a reason for that since not all compilers implement exception handling the same way. In particular, there are three major ways of doing it:
+
+<ul>
+    <li>With a lookup table and some metadata</li>
+    <li>Registering exception handling information upon entering or exiting a method</li>
+    <li>Sj/Lj (ARM)</li>
+</ul>
+
+The way gcc (and many other compilers) implement this ABI on x86 is by using metadata (the .gcc_except_table and the CFI). Although it's rather difficult to parse, and it might take a long time to parse this on runtime when an exception is thrown, it has a great upside: if no exceptions are thrown then there's no setup cost to be payed. That's right, leaving code locality & caching issues aside, using exceptions or not has no performance penalty unless an exception is actually thrown. This is a great advantage and it goes in line with C++ philosofy of having no-cost for non used features.
+
+When using the noexcept specification while declaring a method (or an empty throw specifier, pre C++11) in the setup used for theese articles the compiler would ommit the creation of the .gcc_except_table. This will make the code more compact and it will improve the cache usage, but it's very unlikely that will have a noticeable impact on the performance of the application.
+
 
 
