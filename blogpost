@@ -385,9 +385,11 @@ To know where are the landing pads, something called gcc_except_table is used. T
 	.long	_ZTI14Fake_Exception
 [/sourcecode]
 
-The section .gcc_except_table is where all information to locate a landing pad is stored, and we'll see more about it once we get to analyzing the personality function; for now, we'll just say that LSDA means language specific data area and it's the place where the personality function will check if there are any landing pads for a function (it is also used to run the destructors when unwiding the stack).
+The section .gcc_except_table is where all information to locate a landing pad is stored, and we'll see more about it once we get to analyzing the personality function; for now, we'll just say that LSDA means language specific data area and it's the place where the personality function will check if there are any landing pads for a function (it is also used to run the destructors when unwinding the stack).
 
 To wrap it up: for every function where at least a catch is found, the compiler will translate this statement into a pair of <strong>__cxa_allocate_exception/throw</strong> calls and then the personality function, which will be called by <strong>__cxa_throw</strong>, will read the gcc_except_table for every method in the stack, to find something call LSDA. The personality function will then check in the LSDA whether a catch can handle an exception and if there is any cleanup code to run (this is what triggers the destructors when needed).
+
+We can also draw an interesting conclusion here: if we use the nothrow specifier (or the empty throw specifier) then the compiler can omit the gcc_except_table for this method. The way gcc implements exceptions, that won't have a great impact on performance but it will indeed reduce code size. What's the catch? If an exception is thrown when nothrow was specified the LSDA won't be there and the personality function won't know what to do. When the personality function doesn't know what to do it will invoke the default exception handler, meaning that in most cases throwing from a nothrow method will end up calling std::terminate.
 
 Now that we have an idea of what the personality function does, can we implement one? We'll see that next time.
 
@@ -732,7 +734,7 @@ Dump of assembler code for function try_but_dont_catch():
 [/sourcecode]
 
 
-With the help of _Unwind_ we are now able to get enough information about the current stack frame to decide whether we can or not handle an exception, an also how should we handle it. One more step is needed before we can detect the landing pad we want: we will need to interpret the CFI (call frame information) at the end of the function. This is part of the DWARF spec, the same gdb uses for debugging purposes, and it's not an easy spec to implement. Like we are doing with our ABI, we'll keep this to the bare mininum.
+With the help of _Unwind_ we are now able to get enough information about the current stack frame to decide whether we can or not handle an exception, an also how should we handle it. One more step is needed before we can detect the landing pad we want: we will need to interpret the CFI (call frame information) at the end of the function. This is part of the DWARF spec, the same gdb uses for debugging purposes, and it's not an easy spec to implement. Like we are doing with our ABI, we'll keep this to the bare minimum.
 
 
 -------------------------------------------------------------------------------------------------------------------
@@ -742,14 +744,14 @@ Our little personality function won't do much more than printing "I'm here" unle
 
 Reading the CFI data can be rather straight forward, but there are a few pitfalls we need to consider first. Two, actually:
 
-1. There is very little documentation about the .gcc_except_table format (actually, I only found some mails about it) so we'll need to read a lot of source code and dissasemblies to understand it.
+1. There is very little documentation about the .gcc_except_table format (actually, I only found some mails about it) so we'll need to read a lot of source code and disassembles to understand it.
 2. Although the format itself is not terribly complicated, it uses a LEB encoding that makes reading this table not quite straightforward.
 
 As far as I know most DWARF data is encoded like this, using a <a href="http://en.wikipedia.org/wiki/LEB128">LEB format</a>, which seems to be great for confusing programmers and to save code space while encoding arbitrary lenght ints. Luckily, we can cheat a bit in here: most of the time the LEB encoded numbers will readble with a plain uint8_t, because we won't be dealing with large exception tables or anything like that.
 
 Note: You can download the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v04">in my github repo</a>.
 
-Let's start by analyzing the CFI data directly from the dissasembly, we'll then see if we can build something to read it on our personality function. I'll rename the lables to make them a bit more human-friendly. The LSDA will have three sections, try to spot them below:
+Let's start by analyzing the CFI data directly from the disassembly, we'll then see if we can build something to read it on our personality function. I'll rename the labels to make them a bit more human-friendly. The LSDA will have three sections, try to spot them below:
 
 [sourcecode language="bash"]
 .local_frame_entry:
@@ -774,7 +776,7 @@ This one is very easy: it's just a header to declare we're going to use __gxx_pe
 	.uleb128 .local_lsda_end - .local_lsda_call_site_table_header
 [/sourcecode]
 
-This now has some more info. Those labels are quite obscure but they do follow a pattern. LSDA means language specific data area, the L in front means local, so this is the local (to the translation unit, the .o file) language specific data area number one. Other labels follow similar patterns but I haven't taken the job of descifering them. We don't really need to, anyway.
+This now has some more info. Those labels are quite obscure but they do follow a pattern. LSDA means language specific data area, the L in front means local, so this is the local (to the translation unit, the .o file) language specific data area number one. Other labels follow similar patterns but I haven't taken the job of figuring them out. We don't really need to, anyway.
 
 [sourcecode language="bash"]
 .local_lsda_call_site_table_header:
@@ -824,7 +826,7 @@ struct lsda_call_site_entry {
 };
 [/sourcecode]
 
-So we seem to be on the right track, though we don't know yet why there are 3 call site entries when we only defined a single landing pad. In any case, we can cheat a little: by looking at the dissasembly we can deduce that all the values on the CFI will be less than 128 and this means that in LEB encoding they can be read as plain uchars. This makes our CFI reading code so much easier, and we will see how to use it in our personality function next time.
+So we seem to be on the right track, though we don't know yet why there are 3 call site entries when we only defined a single landing pad. In any case, we can cheat a little: by looking at the disassembly we can deduce that all the values on the CFI will be less than 128 and this means that in LEB encoding they can be read as plain uchars. This makes our CFI reading code so much easier, and we will see how to use it in our personality function next time.
 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: and suddenly, reflexion in C++</h2>
@@ -1277,7 +1279,7 @@ void foo() {
 
 The interesting fields now are start and len: in a function with multiple try/catch blocks we can know whether we should handle an exception by checking if the instruction pointer for the current frame is between start and start + len.
 
-That solves the mistery of how a function with multiple try/catch blocks can handle an exception but we still have another question: why are there three call sites when we only specified a single landing pad? The other three are places where an exception might be thrown so they get added as a possible place for cleanup actions or landing pads. If we learned anything from GOTW us anything it should be that exceptions can be thrown in the places we least expect. There is an entry in the call site table for our throw because it's a block that might throw; the compiler also detected another three.
+That solves the mystery of how a function with multiple try/catch blocks can handle an exception but we still have another question: why are there three call sites when we only specified a single landing pad? The other three are places where an exception might be thrown so they get added as a possible place for cleanup actions or landing pads. If we learned anything from GOTW us anything it should be that exceptions can be thrown in the places we least expect. There is an entry in the call site table for our throw because it's a block that might throw; the compiler also detected another three.
 
 Now that we know what the start and len fields do, let's change our personality function so the correct landing pad can handle the exception being thrown. Go ahead. My implementation for the next time.
 
@@ -1334,7 +1336,7 @@ extern "C" {
 [/sourcecode]
 
 
-Before you test it, try to think about what will happen upon running this test. Focus on the try_but_dont_catch function: the first try/catch block will not throw, then the second block will throw. Since our ABI is quite dumb the first block will handle the second's block exception. What will happen after the first block has finished handling the exception? The execution will resume from where the catch/try ends, thus entering again on the second try/catch block. Infinite loop yet again!
+Before you test it, try to think about what will happen upon running this test. Focus on the try_but_dont_catch function: the first try/catch block will not throw, then the second block will throw. Since our ABI is quite dumb the first block will handle the second block's exception. What will happen after the first block has finished handling the exception? The execution will resume from where the catch/try ends, thus entering again on the second try/catch block. Infinite loop yet again!
 
 Let's use our knowledge of the start/length fields in the call site table to properly choose our landing pad. For this we will know what the instruction pointer was when the exception was thrown, and we can do this with an _Unwind_ function we already know: _Unwind_GetIP. To understand what _Unwind_GetIP will return let's see an example:
 
@@ -1447,7 +1449,7 @@ Try the example again and voila, no more infinite loop! That was a simple change
 
 
 -------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood: finding the right catch & stack frame</h2>
+<h2>C++ exceptions under the hood: finding the right catch &amp; stack frame</h2>
 
 Last time we implemented our personality function so it would be able to handle functions with more than one landing pad. We are now trying to make it recognize whether a certain landing pad can handle a specific exception, so we can use of the exception specification on the catch statement.
 
@@ -1579,7 +1581,7 @@ const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
 printf("%s\n", catch_ti->name());
 [/sourcecode]
 
-The code looks complicated because there are several layers of indirection before actually reaching the struct type_info, but it's not really doing anything complicated: it only reads the .gcc_except_table we found on the dissasembly.
+The code looks complicated because there are several layers of indirection before actually reaching the struct type_info, but it's not really doing anything complicated: it only reads the .gcc_except_table we found on the disassembly.
 
 Printing the name of the type is already a big step in the right direction. Also, our personality function is getting a bit messy. Most of the complexity of reading the LSDA can be hidden under the rug for almost no cost at all. You can check my <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v08">implementation here</a>
 
@@ -1635,7 +1637,7 @@ if (org_ex_type->name() != catch_ti->name())
 
 Check <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">here</a> for the full source with the new changes.
 
-Of course there would be a problem if we add that (can you see it?). If the exception is thrown in two phases and we said in the first one we would handle it, then we can't say on the second one we don't want it anymore. I don't know if _Unwind_ handles this case according to any documentation but this is most likely calling upon undefined behaviour, so just saying we'll handle everything is no longer enough.
+Of course there would be a problem if we add that (can you see it?). If the exception is thrown in two phases and we said in the first one we would handle it, then we can't say on the second one we don't want it anymore. I don't know if _Unwind_ handles this case according to any documentation but this is most likely calling upon undefined behavior, so just saying we'll handle everything is no longer enough.
 
 Since we gave our personality function the ability to know if the landing pad can handle the exception being thrown we have been lying to _Unwind_ about which exceptions we can handle; even though we said we handle all of them on <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v09">our ABI 9</a>, the truth is that we didn't know whether we would be able to handle it. That's easy to change, we can do something like this:
 
@@ -1683,15 +1685,13 @@ void catchit() {
 }
 [/sourcecode]
 
-Unfortunatelly, our personality function only checks for the first type the landing pad can handle. If we delete the Fake_Exception catch block and try it again, though, we'd get a different story: finally, success! Our personality function can now select the correct catch in the correct frame, provided there's no try block with multiple catches.
+Unfortunately, our personality function only checks for the first type the landing pad can handle. If we delete the Fake_Exception catch block and try it again, though, we'd get a different story: finally, success! Our personality function can now select the correct catch in the correct frame, provided there's no try block with multiple catches.
 
-Next time we'll be imrpoving this.
+Next time we'll be further improving this.
 
 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: getting the right catch in a landing pad</h2>
-
-........
 
 So far our personality function can choose the right landing pad on the right stack frame to handle an exception, but it was having some difficulties to find the right catch inside a landing pad. To finally get a decently working personality function we'll need to check all the types an exception can handle by going through all the actions table in the .gcc_except_table.
 
@@ -1739,17 +1739,14 @@ If we intend to read the exceptions supported by the landing pad 1 in the exampl
 
 It sounds complicated because there's, again, a lot of indirection for each step but you can check the full sourcecode for this project <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v11">in my github repo</a>.
 
-In the link above you will also see a bonus: a change to the personality function to correctly detect and use catch(...) blocks. That's an easy change once the personality functions knows how to read the types table: a type with a null pointer (ie a position in the table that instead of a valid pointer to an std::type_info holds null) represents a catch all block. This has an interesting side effect: a catch(T) will be able to handle only native (ie comming from C++) exceptions, whereas a catch(...) would catch also exceptions not thrown from within C++.
+In the link above you will also see a bonus: a change to the personality function to correctly detect and use catch(...) blocks. That's an easy change once the personality functions knows how to read the types table: a type with a null pointer (ie a position in the table that instead of a valid pointer to an std::type_info holds null) represents a catch all block. This has an interesting side effect: a catch(T) will be able to handle only native (ie coming from C++) exceptions, whereas a catch(...) would catch also exceptions not thrown from within C++.
 
-...............
-
+We finally know how exceptions are thrown, how the stack is unwinded, how a personality function selects the correct stack frame to handle an exception and how the right catch inside a landing pad is selected, but we still have on more problem to solve: running destructors. We'll change our personality function to support RAII objects next time.
 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: running destructors while unwinding</h2>
 
-...............
-
-With what we know about .gcc_except_table running destructors is a piece of cake, we only need to see a bit of assembly:
+The mini ABI version 11 was able to handle pretty much all the basics to handle an exception, but it was still unable to properly run destructors. That's quite important if we want to write exception safe code. With what we know about .gcc_except_table running destructors is a piece of cake, we only need to see a bit of assembly:
 
 [sourcecode]
 # Call site table
@@ -1790,11 +1787,11 @@ There are parts we haven't covered, like handling non-native exceptions or inter
 
 
 -------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood: a summary and some final thougths</h2>
+<h2>C++ exceptions under the hood: a summary and some final thoughts</h2>
 
-After writing twenty some articles about C++ low level exception handling, it's time for a recap and some final thoughs. What have we learned so far and how is an exception thrown?
+After writing twenty some articles about C++ low level exception handling, it's time for a recap and some final thoughts. What have we learned so far and how is an exception thrown?
 
-Leaving asside the nitty and gritty details of reading the .gcc_except_table, which were probably the biggest part of this article, we could summarize the whole process like this:
+Leaving aside the ugly details of reading the .gcc_except_table, which were probably the biggest part of this article, we could summarize the whole process like this:
 
 <ol>
     <li>In reality the C++ compiler does rather little to handle an exception, most of the magic actually happens in libstdc++.</li>
@@ -1815,18 +1812,14 @@ Leaving asside the nitty and gritty details of reading the .gcc_except_table, wh
 	<li>Upon finishing the execution of the catch statement, a cleanup function will be called to release the memory held for the exception.</li>
 </ol>
 
-Having learned how exceptions work we are now in a position to better answer why: it's hard to write exception safe code, it's complicated to understand complex exception conditions, it's slow because a lot of voodoo is happening under the hood and  it's dangerous because improperly throwing an exception might call the unforgiving std::terminate.
+Having learned how exceptions work we are now in a position to better answer why it's hard to write exception safe code.
 
-Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ level stuff.
+Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ applications.
 
-Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With exceptions this no longer holds true, an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer get's changed by each landing pad, the stack is unwound in ways we can't control and, ultimately, a lot of magic happens under the hood.
+Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With exceptions this no longer holds true, an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer gets changed by each landing pad, the stack is unwinded in ways we can't control and, ultimately, a lot of magic happens under the hood.
 
 To summarize it even more: exceptions are hard simply because they break the natural flow of a program as we understand it. This does not mean they are intrinsically bad as properly used exceptions can surely lead to cleaner code, but they should always be used with care.
 
--------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood apendinx: throwing and noexcept</h2>
-
-If no except is specified std::terminate is called by the abi....
 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood apendinx: the cost of an exception</h2>
