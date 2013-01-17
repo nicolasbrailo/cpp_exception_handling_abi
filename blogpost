@@ -119,7 +119,7 @@ The name is quite self explanatory, I guess. <b>__cxa_allocate_exception</b> rec
 The function doing all the throw-magic! According to the ABI reference, once the exception has been created <b>__cxa_throw</b> will be called. This function will be responsible of starting the stack unwinding. An important effect of this: <b>__cxa_throw</b> is never supposed to return. It either delegates execution to the correct catch block to handle the exception or calls (by default) <b>std::terminate</b>, but it never ever returns.
 
 <h3>vtable for __cxxabiv1::__class_type_info</h3>
-A weird one... __class_type_info is clearly some sort of RTTI, but what exactly? It's not easy to answer this one now and it's not terribly important for our mini ABI; we'll leave it to an appendix for after we are done analyzing the process of throwing exceptions, for now let's just say this is the entry point the ABI defines to know (in runtime) whether two types are the same or not. This is the function that gets called to determine whether a catch(Parent) can handle a throw Child. For now we'll focus on the basics: we need to give it an address for the linker (ie definining it won't be enough, we need to instanciate it) and it has to have a vtable (that is, it must have a virtual method).
+A weird one... __class_type_info is clearly some sort of RTTI, but what exactly? It's not easy to answer this one now and it's not terribly important for our mini ABI; we'll leave it to an appendix for after we are done analyzing the process of throwing exceptions, for now let's just say this is the entry point the ABI defines to know (in runtime) whether two types are the same or not. This is the function that gets called to determine whether a catch(Parent) can handle a throw Child. For now we'll focus on the basics: we need to give it an address for the linker (ie defining it won't be enough, we need to instantiate it) and it has to have a vtable (that is, it must have a virtual method).
 
 
 Lot's of stuff happen on these functions, but let's try to implement the simplest exception thrower possible: one that will call exit when an exception is thrown. Our application was almost OK but missing some ABI-stuff, so let's create a mycppabi.cpp. Reading <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">our ABI specification</a> we can figure out the signatures for <b>__cxa_allocate_exception</b> and <b>__cxa_throw</b>:
@@ -562,8 +562,8 @@ Remember the action parameter? That's how _Unwind_ tells us what he is expecting
         <ul>
             <li>Unwind will call the personality function with the action _UA_SEARCH_PHASE and a context pointing to the current stack frame.</li>
             <li>The personality function will check if the current stack frame can handle the exception being thrown by analyzing the LSDA.</li>
-            <li>If the exception can be handeled it will return _URC_HANDLER_FOUND. </li>
-            <li>If the exception can not be handeled it will return _URC_CONTINUE_UNWIND and Unwind will then try the next stack frame.</li>
+            <li>If the exception can be handled it will return _URC_HANDLER_FOUND. </li>
+            <li>If the exception can not be handled it will return _URC_CONTINUE_UNWIND and Unwind will then try the next stack frame.</li>
         </ul></li>
     <li>If no landing pad was found, the default exception handler will be called (normally std::terminate).</li>
     <li>If a landing pad was found:
@@ -1288,7 +1288,7 @@ Now that we know what the start and len fields do, let's change our personality 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: finding the right landing pad</h2>
 
-This is now the 15th instalment in what's becoming the longest series I've written for this blog; we have so far learned how exceptions are thrown and we have written a personality function capable of, with some sort of reflexion, detecting where the catch-blocks are (landing pads, in exception speak). In the last article we wrote a personality function that can handle exceptions, but it does so only with the first landing pad of the first call frame in the stack. Let's improve that a little bit, let's make our personality function capable of choosing the right landing pad in a function with multiple landing pads.
+This is now the 15th installment in what's becoming the longest series I've written for this blog; we have so far learned how exceptions are thrown and we have written a personality function capable of, with some sort of reflexion, detecting where the catch-blocks are (landing pads, in exception speak). In the last article we wrote a personality function that can handle exceptions, but it does so only with the first landing pad of the first call frame in the stack. Let's improve that a little bit, let's make our personality function capable of choosing the right landing pad in a function with multiple landing pads.
 
 In a TDD fashion we can first build a test for our ABI. Let's modify our test program, throw.cpp, to have two try/catch blocks:
 
@@ -1491,7 +1491,7 @@ Note: You can download the full sourcecode for this project <a href="https://git
 .LLSDATT1:
 [/sourcecode]
 
-Doesn't look like much, but there's a promissing pointer (both a proverbial and a real pointer) to something that has our exception's name. Let's go to the definition of _ZTI14Fake_Exception:
+Doesn't look like much, but there's a promising pointer (both a proverbial and a real pointer) to something that has our exception's name. Let's go to the definition of _ZTI14Fake_Exception:
 
 [sourcecode]
 _ZTI14Fake_Exception:
@@ -1786,13 +1786,13 @@ There are parts we haven't covered, like handling non-native exceptions, catchin
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: a summary and some final thoughts</h2>
 
-After writing twenty some articles about C++ low level exception handling, it's time for a recap and some final thoughts. What have we learned so far and how is an exception thrown?
+After writing twenty some articles about C++ low level exception handling, it's time for a recap and some final thoughts. What did we learn, how is an exception thrown and how is it caught?
 
-Leaving aside the ugly details of reading the .gcc_except_table, which were probably the biggest part of this article, we could summarize the whole process like this:
+Leaving aside the ugly details of reading the .gcc_except_table, which were probably the biggest part of these articles, we could summarize the whole process like this:
 
 <ol>
-    <li>In reality the C++ compiler does rather little to handle an exception, most of the magic actually happens in libstdc++.</li>
-    <li>There are a few things the compiler does indeed do, though. Namely:
+    <li>The C++ compiler actually does rather little to handle an exception, most of the magic actually happens in libstdc++.</li>
+    <li>There are a few things the compiler does, though. Namely:
     <ul>
         <li>It creates the CFI information to unwind the stack.</li>
         <li>It creates something called .gcc_except_table with information about landing pads (try/catch blocks). Kind of like reflexion info.</li>
@@ -1811,31 +1811,136 @@ Leaving aside the ugly details of reading the .gcc_except_table, which were prob
 
 Having learned how exceptions work we are now in a position to better answer why it's hard to write exception safe code.
 
-Exceptions, while conceptually rather clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ applications.
+Exceptions, while conceptually clean, are pretty much "spooky action at a distance". Throwing and catching an exception involves a certain degree of reflexion (in the sense that a program must analyze itself) which is not common for C++ applications.
 
-Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With exceptions this no longer holds true, an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer gets changed by each landing pad, the stack is unwinded in ways we can't control and, ultimately, a lot of magic happens under the hood.
+Even if we talk about higher level languages, throwing an exception means we cannot rely on our understanding of how a normal program execution flow should work anymore: we are used to a pretty much linear execution flow with some conditional operators branching or calling other functions. With an exception, this no longer holds true: an entity which is not the code of our application is in control of the execution, and it goes around the program executing certain blocks of code here and there without following any of the normal rules. The instruction pointer gets changed by each landing pad, the stack is unwinded in ways we can't control and, ultimately, a lot of magic happens under the hood.
 
 To summarize it even more: exceptions are hard simply because they break the natural flow of a program as we understand it. This does not mean they are intrinsically bad as properly used exceptions can surely lead to cleaner code, but they should always be used with care.
 
 
 -------------------------------------------------------------------------------------------------------------------
-<h2>C++ exceptions under the hood apendinx: the cost of an exception</h2>
+<h2>C++ exceptions under the hood appendix: the true cost of an exception</h2>
 
-Remember that a long way back, when the series on exception handling was just started, I mentioned this series would only apply for gcc/x86? There is a reason for that since not all compilers implement exception handling the same way. In particular, there are three major ways of doing it:
+Remember a long way back, when the series on exception handling was just started, that I mentioned these articles would only apply for gcc/x86? There is a reason for that since not all compilers implement exception handling the same way. In particular, there are two major ways of doing it:
 
 <ul>
-    <li>With a lookup table and some metadata</li>
-    <li>Registering exception handling information upon entering or exiting a method</li>
-    <li>Sj/Lj (ARM)</li>
+    <li>With a lookup table and some metadata, like the Itanium ABI specifies; this is what we talked about.</li>
+    <li>Sj/Lj (ARM): Registering exception handling information upon entering or exiting a method.</li>
 </ul>
 
-The way gcc (and many other compilers) implement this ABI on x86 is by using metadata (the .gcc_except_table and the CFI). Although it's rather difficult to parse, and it might take a long time to parse this on runtime when an exception is thrown, it has a great upside: if no exceptions are thrown then there's no setup cost to be payed. That's right, leaving code locality & caching issues aside, using exceptions or not has no performance penalty unless an exception is actually thrown. This is a great advantage and it goes in line with C++ philosofy of having no-cost for non used features.
+The way gcc (and many other compilers) implement this ABI on x86 is by using metadata (the .gcc_except_table and the CFI). Although it's rather difficult to parse, and it might take a long time to parse this on runtime when an exception is thrown, it has a great upside: if no exceptions are thrown then there's no setup cost to be payed. This is called "Zero-cost exception handling" because a normal execution, where no exceptions are thrown, no penalty is payed. The performance is exactly the same we would have as if we had specified nothrow. That's right, leaving code locality & caching issues aside, using exceptions or not has no performance penalty unless an exception is actually thrown. This is a great advantage and it goes in line with C++ philosophy of having no-cost for non used features.
 
-When using the noexcept specification while declaring a method (or an empty throw specifier, pre C++11) in the setup used for theese articles the compiler would ommit the creation of the .gcc_except_table. This will make the code more compact and it will improve the cache usage, but it's very unlikely that will have a noticeable impact on the performance of the application.
+When using the noexcept specification while declaring a method (or an empty throw specifier, pre C++11) in the setup used for these articles the compiler would omit the creation of the .gcc_except_table. This will make the code more compact and it will improve the cache usage, but it's very unlikely that will have a noticeable impact on the performance of the application.
+
+If we talk about ARM, Sj/Lj seems to be the default option (I'm sure there's a good reason for that but I don't have enough experience with ARM to know it). This exception handling method is based on registering exception handling information upon entering or exiting a method which either uses exceptions or requires a cleanup if an exception is thrown. This will result in a quicker exception handling, but the setup cost is payed whether an exception is thrown or not.
+
+If you're interested on reading more about sjlj and zero cost exception handling <a href="http://llvm.org/docs/ExceptionHandling.html">LLVM has great documentation</a>.
 
 
 -------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood appendix: RTTI and exceptions orthogonality</h2>
 
-<h2>C++ exceptions under the hood: investigating __cxxabiv1::__class_type_info</h2>
+
+-------------------------------------------------------------------------------------------------------------------
+<h2>C++ exceptions under the hood appendix: __cxxabiv1::__class_type_info</h2>
+
+A long time ago, when we where just starting to write our mini ABI to handle exceptions without libstdc++'s help, we had to add an empty class to appease the linker:
+
+[sourcecode language="cpp"]
+namespace __cxxabiv1 {
+    struct __class_type_info {
+        virtual void foo() {}
+    } ti;
+}
+[/sourcecode]
+
+I mentioned this class is used to check whether a catch can handle a subtype of the exception thrown, but what does that exactly mean? Let's change a bit our throwing functions to see what happens when we start dealing with inheritance. You may want to check <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v12">the source code for these examples.</a>
+
+[sourcecode language="cpp"]
+struct Derived_Exception : public Exception {};
+
+void raise() {
+    throw Derived_Exception();
+}
+
+void catchit() {
+    try {
+        raise();
+    } catch(Exception&) {
+        printf("Caught an Exception!\n");
+    } catch(Derived_Exception&) {
+        printf("Caught a Derived_Exception!\n");
+    }
+
+    printf("catchit handled the exception\n");
+}
+[/sourcecode]
+
+What should happen in this example is cristal clear: it should print "Caught an Exception", because that catch block should be able to handle both types, Exception and Derived_Exception. Not only that, if we compile throw.cpp we'll get a warning to let us know that the second catch is dead code:
+
+[sourcecode language="cpp"]
+throw.cpp: In function ‘void catchit()’:
+throw.cpp:15:7: warning: exception of type ‘Derived_Exception’ will be caught [enabled by default]
+throw.cpp:13:7: warning:    by earlier handler for ‘Exception’ [enabled by default]
+[/sourcecode]
+
+Luckily a warning won't stop compilation; we can continue and try to link the resulting .o; we'll find a linker error:
+
+[sourcecode language="cpp"]
+throw.o:(.rodata._ZTI17Derived_Exception[typeinfo for Derived_Exception]+0x0): undefined reference to `vtable for __cxxabiv1::__si_class_type_info'
+[/sourcecode]
+
+And again we start seeing __type_info errors. If we create a fake __si_class_type_info to workaround this problem we we'll finally see our ABI breaks down when dealing with inheritance, in a rather funny way: the compiler will warn us about dead code and then we see that same code being executed by our ABI!
+
+[sourcecode language="cpp"]
+g++ -c -o throw.o -O0 -ggdb throw.cpp
+throw.cpp: In function ‘void catchit()’:
+throw.cpp:15:7: warning: exception of type ‘Derived_Exception’ will be caught [enabled by default]
+throw.cpp:13:7: warning:    by earlier handler for ‘Exception’ [enabled by default]
+gcc main.o throw.o mycppabi.o -O0 -ggdb -o app
+./app
+begin FTW
+Caught a Derived_Exception!
+end FTW
+catchit handled the exception
+[/sourcecode]
+
+Clearly there's something wrong with our ABI, and it's very easy to trace this problem back to the definition of "can_handle":
+
+[sourcecode language="cpp"]
+bool can_handle(const std::type_info *thrown_exception,
+                const std::type_info *catch_type)
+{
+    // If the catch has no type specifier we're dealing with a catch(...)
+    // and we can handle this exception regardless of what it is
+    if (not catch_type) return true;
+
+    // Naive type comparisson: only check if the type name is the same
+    // This won't work with any kind of inheritance
+    if (thrown_exception->name() == catch_type->name())
+        return true;
+
+    // If types don't match just don't handle the exception
+    return false;
+}
+[/sourcecode]
+
+Our ABI get's the std::type_info for the exception being thrown and for the type which can be handled, and then compares if the names for these types is the same. This is fine as long as no inheritance is involved, but in the example above we already found a case where an exception should be handled even though a name is not shared.
+
+The same problem will araise when trying to catch a pointer to an exception: the names won't match. Even more interesting, if you try and link throw.cpp but change the catch to receive a pointer instead, you'll get a new linker error. If you fix it you should end up with something like this:
+
+[sourcecode language="cpp"]
+namespace __cxxabiv1 {
+    struct __class_type_info    { virtual void foo() {} } ti;
+    struct __si_class_type_info { virtual void foo() {} } si;
+    struct __pointer_type_info  { virtual void foo() {} } ptr;
+}
+[/sourcecode]
+
+A very interesting pattern is starting to emerge: there is a different *_type_info for each possible catch type.
+
+..............
+1. El class type info es una clase derivada de std::type_info. La ABI la requiere para que el compilador/abi pueda tener info entre el std obj y el tipo real.
+2. type info tmb se usa para ver si el catch puede manejar una excepcion cuando es ptr o hereda de...
 
 
