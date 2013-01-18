@@ -1925,7 +1925,7 @@ bool can_handle(const std::type_info *thrown_exception,
 }
 [/sourcecode]
 
-Our ABI get's the std::type_info for the exception being thrown and for the type which can be handled, and then compares if the names for these types is the same. This is fine as long as no inheritance is involved, but in the example above we already found a case where an exception should be handled even though a name is not shared.
+Our ABI gets the std::type_info for the exception being thrown and for the type which can be handled, and then compares if the names for these types is the same. This is fine as long as no inheritance is involved, but in the example above we already found a case where an exception should be handled even though a name is not shared.
 
 The same problem will araise when trying to catch a pointer to an exception: the names won't match. Even more interesting, if you try and link throw.cpp but change the catch to receive a pointer instead, you'll get a new linker error. If you fix it you should end up with something like this:
 
@@ -1937,7 +1937,25 @@ namespace __cxxabiv1 {
 }
 [/sourcecode]
 
-A very interesting pattern is starting to emerge: there is a different *_type_info for each possible catch type.
+A very interesting pattern is starting to emerge: there is a different *_type_info for each possible catch type used. In fact the compiler will generate a different structure for each throw style. For example, for these throws:
+
+[sourcecode language="cpp"]
+throw new Exception;
+throw Exception;
+[/sourcecode]
+
+the compiler would generate something like:
+
+[sourcecode language="cpp"]
+__cxa_throw(_Struct_Type_Info__Ptr__Exception);
+__cxa_throw(_Struct_Type_Info__Class__Exception);
+[/sourcecode]
+
+In fact, even for this simple example, the inheritance web (not tree, web) is quite complex:
+
+[ IMG ]
+
+
 
 ..............
 1. El class type info es una clase derivada de std::type_info. La ABI la requiere para que el compilador/abi pueda tener info entre el std obj y el tipo real.
