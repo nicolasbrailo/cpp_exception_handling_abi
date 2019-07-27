@@ -18,7 +18,7 @@ This already looks quite complicated and we haven't even started; that was but a
 
 To learn about all the details that happen under the hood on the next article we will start to implement our own mini libstdlibc++. Not all of it though, only the part that handles exceptions. Actually not even all of that, only the bare minimum we need to make a simple throw/catch statement work. Some assembly will be needed, but nothing too fancy. A lot of patience will be required, I'm afraid.
 
-If you are too curious and want to start reading about exception handling implementation then you can start <a href="http://mentorembedded.github.com/cxx-abi/">here</a>, for a full specification of what we are going to implement on the next few articles. I'll try to make these articles a bit more didactic and easier to follow though, so see you next time to start our ABI!
+If you are too curious and want to start reading about exception handling implementation then you can start <a href="https://itanium-cxx-abi.github.io/cxx-abi/">here</a>, for a full specification of what we are going to implement on the next few articles. I'll try to make these articles a bit more didactic and easier to follow though, so see you next time to start our ABI!
 
 <h6>** Disclaimer note: I'm in no way versed on the magic going on when an exception is thrown. These series will be about trying to demystify the stuff going on under the hood and learning something in the process, and while I hope some of it will be correct I have no doubts there will be a lot of subtleties not quite right. Let me know if you think I should correct something **</h6>
 
@@ -26,7 +26,7 @@ If you are too curious and want to start reading about exception handling implem
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: a tiny ABI</h2>
 
-If we are going to try and understand why exceptions are complex and how do they work, we can either read a lot of manuals or we can try to write something to handle the exceptions ourselves. Actually, I was surprised by the lack of good information on this topic: pretty much everything I found is either incredibly detailed or very basic, with one exception or two. Of course there are some specifications to implement (most notably the <a href="http://mentorembedded.github.com/cxx-abi/">ABI for c++</a> but we also have <a href="http://www.logix.cz/michal/devel/gas-cfi/">CFI</a>, <a href="http://www.logix.cz/michal/devel/gas-cfi/dwarf-2.0.0.pdf">DWARF</a> and libstdc) but reading the specification alone is not enough to really learn what's going on under the hood.
+If we are going to try and understand why exceptions are complex and how do they work, we can either read a lot of manuals or we can try to write something to handle the exceptions ourselves. Actually, I was surprised by the lack of good information on this topic: pretty much everything I found is either incredibly detailed or very basic, with one exception or two. Of course there are some specifications to implement (most notably the <a href="https://itanium-cxx-abi.github.io/cxx-abi/">ABI for c++</a> but we also have <a href="http://www.logix.cz/michal/devel/gas-cfi/">CFI</a>, <a href="http://www.logix.cz/michal/devel/gas-cfi/dwarf-2.0.0.pdf">DWARF</a> and libstdc) but reading the specification alone is not enough to really learn what's going on under the hood.
 
 Let's start with the obvious then: wheel reinvention! We know for a fact that plain C doesn't handle exceptions, so let's try to link a throwing C++ program with a plain C linker and see what happens. I came up with something simple like this:
 
@@ -91,14 +91,14 @@ And sure enough, gcc complains about missing C++ symbols. Those are very special
 
 The C++ ABI defines a standard binary format so we can link objects together in a single program; if we compile a .o file with two different compilers, and those compilers use a different ABI, we won't be able to link the .o objects into an application. The ABI will also define some other formats, like for example the interface to perform stack unwinding or the throwing of an exception. In this case, the ABI defines an interface (not necessarily a binary format, just an interface) between C++ and some other library in our program which will handle the stack unwinding, ie the ABI defines C++ specific stuff so it can talk to non-C++ libraries: this is what would enable exceptions thrown from other languages to be caught in C++, amongst other things.
 
-In any case, the linker errors are pointing us to the first layer into exception handling under the hood: an interface we'll have to implement ourselves, the cxxabi. For the next article we'll be starting our own mini ABI, as defined in the <a href="http://mentorembedded.github.com/cxx-abi/">C++ ABI</a>.
+In any case, the linker errors are pointing us to the first layer into exception handling under the hood: an interface we'll have to implement ourselves, the cxxabi. For the next article we'll be starting our own mini ABI, as defined in the <a href="https://itanium-cxx-abi.github.io/cxx-abi/">C++ ABI</a>.
 
 -------------------------------------------------------------------------------------------------------------------
 <h2>C++ exceptions under the hood: an ABI to appease the linker</h2>
 
 On our journey to understand exceptions we discovered that the heavy-lifting is done in libstdc++ as specified by the C++ ABI. Reading some linker errors we deduced last time that for handling exceptions we need help from the C++ ABI; we created a throwing C++ program, linked it together with a plain C program and found that the compiler somehow translated our throw instruction into something that is now calling a few libstd++ functions to actually throw an exception. Lost already? You can check the sourcode for this project so far <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v01">in my github repo</a>.
 
-Anyway, we want to understand exactly how an exception is thrown, so we will try to implement our own mini-ABI, capable of throwing an exception. To do this, a lot of <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">RTFM</a> is needed, but a full ABI interface can be found <a href="http://libcxxabi.llvm.org/spec.html">here, for LLVM</a>. Let's start by remembering what those missing functions are:
+Anyway, we want to understand exactly how an exception is thrown, so we will try to implement our own mini-ABI, capable of throwing an exception. To do this, a lot of <a href="https://itanium-cxx-abi.github.io/cxx-abi/">RTFM</a> is needed, but a full ABI interface can be found <a href="http://libcxxabi.llvm.org/spec.html">here, for LLVM</a>. Let's start by remembering what those missing functions are:
 
 
 [sourcecode language="bash"]
@@ -122,7 +122,7 @@ The function doing all the throw-magic! According to the ABI reference, once the
 A weird one... __class_type_info is clearly some sort of RTTI, but what exactly? It's not easy to answer this one now and it's not terribly important for our mini ABI; we'll leave it to an appendix for after we are done analyzing the process of throwing exceptions, for now let's just say this is the entry point the ABI defines to know (in runtime) whether two types are the same or not. This is the function that gets called to determine whether a catch(Parent) can handle a throw Child. For now we'll focus on the basics: we need to give it an address for the linker (ie defining it won't be enough, we need to instantiate it) and it has to have a vtable (that is, it must have a virtual method).
 
 
-Lot's of stuff happen on these functions, but let's try to implement the simplest exception thrower possible: one that will call exit when an exception is thrown. Our application was almost OK but missing some ABI-stuff, so let's create a mycppabi.cpp. Reading <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">our ABI specification</a> we can figure out the signatures for <b>__cxa_allocate_exception</b> and <b>__cxa_throw</b>:
+Lot's of stuff happen on these functions, but let's try to implement the simplest exception thrower possible: one that will call exit when an exception is thrown. Our application was almost OK but missing some ABI-stuff, so let's create a mycppabi.cpp. Reading <a href="https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html">our ABI specification</a> we can figure out the signatures for <b>__cxa_allocate_exception</b> and <b>__cxa_throw</b>:
 
 [sourcecode language="cpp"]
 #include <unistd.h>
@@ -195,7 +195,7 @@ In this series about exception handling, we have discovered quite a bit about ex
     <li>A throw statement will be translated by the compiler into two calls, <strong>__cxa_allocate_exception</strong> and <strong>__cxa_throw</strong>.</li>
     <li><strong>__cxa_allocate_exception</strong> and <strong>__cxa_throw</strong> "live" on libstdc++</li>
     <li><strong>__cxa_allocate_exception</strong> will allocate memory for the new exception.</li>
-    <li><strong>__cxa_throw</strong> will prepare a bunch of stuff and forward this exception to <strong>_Unwind_</strong>, a set of functions that live in libstdc and perform the real stack unwinding (<a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html">the ABI</a> defines the interface for these functions).</li>
+    <li><strong>__cxa_throw</strong> will prepare a bunch of stuff and forward this exception to <strong>_Unwind_</strong>, a set of functions that live in libstdc and perform the real stack unwinding (<a href="https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html">the ABI</a> defines the interface for these functions).</li>
 </ul>
 
 Quite simple so far, but exception catching is a bit more complicated, specially because it requires certain degree of reflexion (that is, the ability of a program to analyze its own source code). Let's keep on trying our same old method, let's add some catch statements throughout our code, compile it and see what happens:
@@ -673,7 +673,7 @@ It works, but something is missing: the catch inside the catch/try block is not 
 We left our mini-ABI project (<a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v03">link</a>) capable of throwing exceptions, and we are now working on catching them; we implemented a personality function last time which was capable of detecting and handling exceptions but it was still a bit incomplete: even though it can properly notify the stack unwinder when it should stop but our version of __gxx_personality_v0 can't run the code inside a catch block. It's better than a coredump one might argue, but still a long way from a useful exception handling ABI. Can we improve it?
 
 
-How can we tell _Unwind_ where is our landing pad, so we can execute the code inside the catch statement? If we go back to the <a href="http://mentorembedded.github.com/cxx-abi/abi-eh.html#base-om">ABI specification</a>, there are a few context management functions which might help us:
+How can we tell _Unwind_ where is our landing pad, so we can execute the code inside the catch statement? If we go back to the <a href="https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html#base-om">ABI specification</a>, there are a few context management functions which might help us:
 
 <ul>
 	<li>_Unwind_GetLanguageSpecificData, to get the LSDA for this stack frame. We should be able to find the landing pads and the destructors to run using it.</li>
@@ -1178,7 +1178,7 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 }
 [/sourcecode]
 
-Note: For a more detailed description of the LSDA tables check <a href="http://mentorembedded.github.com/cxx-abi/exceptions.pdf">here</a> and for the full source code <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v06">check my github repo</a>.
+Note: For a more detailed description of the LSDA tables check <a href="https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html">here</a> and for the full source code <a href="https://github.com/nicolasbrailo/cpp_exception_handling_abi/tree/master/abi_v06">check my github repo</a>.
 
 Finally, it worked. You should see something like this if you run it:
 
