@@ -13,3 +13,5 @@
 *.a
 
 libcxxabi
+
+app
