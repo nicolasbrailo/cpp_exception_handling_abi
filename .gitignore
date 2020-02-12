@@ -12,6 +12,9 @@
 *.la
 *.a
 
-libcxxabi
+# Assembly files
+*.s
 
+libcxxabi
 app
+*log.txt

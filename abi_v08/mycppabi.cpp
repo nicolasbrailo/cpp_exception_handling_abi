@@ -123,14 +123,15 @@ struct LSDA_Header {
 
         // Modified version of read for compatability with decodoing function
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
-        read_ptr = dec_uleb128(read_ptr, &start_encoding);
-        read_ptr = dec_uleb128(read_ptr, &type_encoding);
+        start_encoding = read_ptr[0];
+        type_encoding = read_ptr[1];
+        read_ptr += 2;
         read_ptr = dec_uleb128(read_ptr, &type_table_offset);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
-    LSDA_line start_encoding;
-    LSDA_line type_encoding;
+    uint8_t start_encoding;
+    uint8_t type_encoding;
 
     // This is the offset, from the end of the header, to the types table
     LSDA_line type_table_offset;
@@ -146,12 +147,13 @@ struct LSDA_CS_Header {
 
         // Modified version of read for compatability with decodoing function
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
-        read_ptr = dec_uleb128(read_ptr, &encoding);
+        encoding = read_ptr[0];
+        read_ptr += 1;
         read_ptr = dec_uleb128(read_ptr, &length);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
-    LSDA_line encoding;
+    uint8_t encoding;
     LSDA_line length;
 };
 
@@ -233,7 +235,8 @@ struct LSDA
         cs_table_start(raw_lsda),
 
         // Calculate where the end of the LSDA CS table is
-        cs_table_end(raw_lsda + cs_header.length),
+        // Pointer Arth. has been changed to accomodate the lareger pointer type
+        cs_table_end((const LSDA_ptr)((uint8_t*)(raw_lsda) + cs_header.length)),
 
         // Get the start of action tables
         action_tbl_start( cs_table_end )
@@ -344,6 +347,16 @@ _Unwind_Reason_Code __gxx_personality_v0 (
         //     _Unwind_SetIP(context, func_start + cs->lp);
         //     break;
         // }
+
+        // This is used to print the values inside the headers
+        printf("LSDA Header:\n");
+        printf("\tstart_encoding: %i\n", lsda.header.start_encoding);
+        printf("\ttype_encoding: %i\n", lsda.header.type_encoding);
+        printf("\ttype_table_offset: %i\n", lsda.header.type_table_offset);
+
+        printf("LSDA Call Site Header:\n");
+        printf("\tencoding: %i\n", lsda.cs_header.encoding);
+        printf("\tlength: %i\n", lsda.cs_header.length);
 
         //Now this one is a cute little for loop for accessing the Call Site table entries for depugging
         int i = 0;
