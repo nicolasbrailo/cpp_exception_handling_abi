@@ -84,7 +84,7 @@ void __cxa_end_catch()
  * this to avoid a const mess later on; LSDA_ptr refers to readonly and
  * &LSDA_ptr will be a non-const pointer to a const place in memory
  */
-typedef const _uleb128_t* LSDA_ptr;
+typedef const uint8_t* LSDA_ptr;
 typedef _uleb128_t LSDA_line;
 
 static const unsigned char *
@@ -226,7 +226,8 @@ struct LSDA
         // Get the start of the types table (it's actually the end of the
         // table, but since the action index will hold a negative index
         // for this table we can say it's the beginning
-        types_table_start( (const void**)(raw_lsda + header.type_table_offset) ),
+        // modified the pointer size for pointer arthemitics
+        types_table_start( (const void**)((uint8_t*)raw_lsda + header.type_table_offset) ),
 
         // Read the LSDA CS header
         cs_header(&raw_lsda),
@@ -298,79 +299,83 @@ _Unwind_Reason_Code __gxx_personality_v0 (
          * This loop produces a segmentation fault error due to accesing a wrong memory location
          * This happens probably because the LSDA entries are read without proper decoding so until we fix it, it will remain preceded by these nice //
          */
-        // for(const LSDA_CS *cs = lsda.next_call_site_entry(true);
-        //         cs != NULL;
-        //         cs = lsda.next_call_site_entry())
-        // {
-        //     // If there's no landing pad we can't handle this exception
-        //     if (not cs->lp) continue;
-
-        //     uintptr_t func_start = _Unwind_GetRegionStart(context);
-
-        //     // Calculate the range of the instruction pointer valid for this
-        //     // landing pad; if this LP can handle the current exception then
-        //     // the IP for this stack frame must be in this range
-        //     uintptr_t try_start = func_start + cs->start;
-        //     uintptr_t try_end = func_start + cs->start + cs->len;
-
-        //     // Check if this is the correct LP for the current try block
-        //     if (throw_ip < try_start) continue;
-        //     if (throw_ip > try_end) continue;
-
-        //     // Get the offset into the action table for this LP
-        //     if (cs->action > 0)
-        //     {
-        //         // cs->action is the offset + 1; that way cs->action == 0
-        //         // means there is no associated entry in the action table
-        //         const size_t action_offset = cs->action - 1;
-        //         const LSDA_ptr action = lsda.action_tbl_start + action_offset;
-
-        //         // For a landing pad with a catch the action table will
-        //         // hold an index to a list of types
-        //         int type_index = action[0];
-
-        //         const void* catch_type_info = lsda.types_table_start[ -1 * type_index ];
-        //         const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
-        //         printf("%s\n", catch_ti->name());
-        //     }
-
-        //     // We found a landing pad for this exception; resume execution
-        //     int r0 = __builtin_eh_return_data_regno(0);
-        //     int r1 = __builtin_eh_return_data_regno(1);
-
-        //     _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
-
-        //     // Note the following code hardcodes the exception type;
-        //     // we'll fix that later on
-        //     _Unwind_SetGR(context, r1, (uintptr_t)(1));
-
-        //     _Unwind_SetIP(context, func_start + cs->lp);
-        //     break;
-        // }
-
-        // This is used to print the values inside the headers
-        printf("LSDA Header:\n");
-        printf("\tstart_encoding: %i\n", lsda.header.start_encoding);
-        printf("\ttype_encoding: %i\n", lsda.header.type_encoding);
-        printf("\ttype_table_offset: %i\n", lsda.header.type_table_offset);
-
-        printf("LSDA Call Site Header:\n");
-        printf("\tencoding: %i\n", lsda.cs_header.encoding);
-        printf("\tlength: %i\n", lsda.cs_header.length);
-
-        //Now this one is a cute little for loop for accessing the Call Site table entries for depugging
-        int i = 0;
-        for (const LSDA_CS *cs = lsda.next_call_site_entry(true);
-            cs != NULL;
-            cs = lsda.next_call_site_entry())
+        for(const LSDA_CS *cs = lsda.next_call_site_entry(true);
+                cs != NULL;
+                cs = lsda.next_call_site_entry())
         {
-            printf("Found a CS #%i:\n", i);
-            printf("\tcs_start: %i\n", cs->start);
-            printf("\tcs_len: %i\n", cs->len);
-            printf("\tcs_lp: %i\n", cs->lp);
-            printf("\tcs_action: %i\n", cs->action);
-            i++;
+            // If there's no landing pad we can't handle this exception
+            if (not cs->lp) continue;
+
+            uintptr_t func_start = _Unwind_GetRegionStart(context);
+
+            // Calculate the range of the instruction pointer valid for this
+            // landing pad; if this LP can handle the current exception then
+            // the IP for this stack frame must be in this range
+            uintptr_t try_start = func_start + cs->start;
+            uintptr_t try_end = func_start + cs->start + cs->len;
+
+            // Check if this is the correct LP for the current try block
+            if (throw_ip < try_start) continue;
+            if (throw_ip > try_end) continue;
+
+            // Get the offset into the action table for this LP
+            if (cs->action > 0)
+            {
+                // cs->action is the offset + 1; that way cs->action == 0
+                // means there is no associated entry in the action table
+                const size_t action_offset = cs->action - 1;
+                const LSDA_ptr action = lsda.action_tbl_start + action_offset;
+
+                // For a landing pad with a catch the action table will
+                // hold an index to a list of types
+                // the 4 is the size of the .long data that stores types in ttable
+                int type_index = 4 * action[0];
+
+                uint8_t* catch_type_info_byte = (uint8_t*)lsda.types_table_start;
+                catch_type_info_byte -= type_index;
+                void** catch_type_info_void = (void**)catch_type_info_byte;
+                const void* catch_type_info = (const void*)(catch_type_info_void[0]);
+                const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
+                //printf("%s\n", catch_ti->name());
+            }
+
+            // We found a landing pad for this exception; resume execution
+            int r0 = __builtin_eh_return_data_regno(0);
+            int r1 = __builtin_eh_return_data_regno(1);
+
+            _Unwind_SetGR(context, r0, (uintptr_t)(unwind_exception));
+
+            // Note the following code hardcodes the exception type;
+            // we'll fix that later on
+            _Unwind_SetGR(context, r1, (uintptr_t)(1));
+
+            _Unwind_SetIP(context, func_start + cs->lp);
+            break;
         }
+
+        // // This is used to print the values inside the headers
+        // printf("LSDA Header:\n");
+        // printf("\tstart_encoding: %i\n", lsda.header.start_encoding);
+        // printf("\ttype_encoding: %i\n", lsda.header.type_encoding);
+        // printf("\ttype_table_offset: %i\n", lsda.header.type_table_offset);
+
+        // printf("LSDA Call Site Header:\n");
+        // printf("\tencoding: %i\n", lsda.cs_header.encoding);
+        // printf("\tlength: %i\n", lsda.cs_header.length);
+
+        // //Now this one is a cute little for loop for accessing the Call Site table entries for debugging
+        // int i = 0;
+        // for (const LSDA_CS *cs = lsda.next_call_site_entry(true);
+        //     cs != NULL;
+        //     cs = lsda.next_call_site_entry())
+        // {
+        //     printf("Found a CS #%i:\n", i);
+        //     printf("\tcs_start: %i\n", cs->start);
+        //     printf("\tcs_len: %i\n", cs->len);
+        //     printf("\tcs_lp: %i\n", cs->lp);
+        //     printf("\tcs_action: %i\n", cs->action);
+        //     i++;
+        // }
 
         return _URC_INSTALL_CONTEXT;
     } else {
