@@ -87,7 +87,7 @@ void __cxa_end_catch()
 typedef const uint8_t* LSDA_ptr;
 typedef _uleb128_t LSDA_line;
 
-static const unsigned char *
+const unsigned char *
 dec_uleb128 (const unsigned char *p, _uleb128_t *val)
 {
   unsigned int shift = 0;
@@ -103,6 +103,32 @@ dec_uleb128 (const unsigned char *p, _uleb128_t *val)
   while (byte & 0x80);
   *val = result;
   return p;
+}
+
+// This function recieves a pointer to a ttype entry and return the corrisponding type_info
+// It's an implementation of three different functions from unwind-pe.h specific to our case and cannot be generalized for different encoding and size
+// Handling these differences will be done by accessing different members of the union according to the encoding
+const std::type_info *
+get_ttype_entry (uint8_t* entry)
+{
+    union unaligned
+    {
+        void *ptr;
+        unsigned u2 __attribute__ ((mode (HI)));
+        unsigned u4 __attribute__ ((mode (SI)));
+        unsigned u8 __attribute__ ((mode (DI)));
+        signed s2 __attribute__ ((mode (HI)));
+        signed s4 __attribute__ ((mode (SI)));
+        signed s8 __attribute__ ((mode (DI)));
+    } __attribute__((__packed__));
+
+    const union unaligned *u = (const union unaligned *) entry;
+    unsigned long result;
+    result = u->s4 + (unsigned long)u;
+	entry += 4;
+    result = *(unsigned long *)result;
+    const std::type_info *tinfo = reinterpret_cast<const std::type_info *>(result);
+    return tinfo;
 }
 
 struct LSDA_Header {
@@ -331,12 +357,12 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                 // the 4 is the size of the .long data that stores types in ttable
                 int type_index = 4 * action[0];
 
-                uint8_t* catch_type_info_byte = (uint8_t*)lsda.types_table_start;
-                catch_type_info_byte -= type_index;
-                void** catch_type_info_void = (void**)catch_type_info_byte;
-                const void* catch_type_info = (const void*)(catch_type_info_void[0]);
-                const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
-                //printf("%s\n", catch_ti->name());
+                uint8_t* catch_type_info = (uint8_t*)lsda.types_table_start;
+                catch_type_info -= type_index;
+                // void** catch_type_info_void = (void**)catch_type_info_byte;
+                // const void* catch_type_info = (const void*)(catch_type_info_void[0]);
+                const std::type_info *catch_ti = get_ttype_entry(catch_type_info);
+                printf("%s\n", catch_ti->name());
             }
 
             // We found a landing pad for this exception; resume execution
