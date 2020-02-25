@@ -90,7 +90,7 @@ typedef _uleb128_t LSDA_line;
  
 //This function receives a pointer the first byte to be decoded and the address of where to put the decoded value.
 const unsigned char *
-dec_uleb128 (const unsigned char *p, _uleb128_t *val)
+read_uleb128 (const unsigned char *p, _uleb128_t *val)
 {
   unsigned int shift = 0;
   unsigned char byte;
@@ -111,26 +111,16 @@ dec_uleb128 (const unsigned char *p, _uleb128_t *val)
 
 // This function recieves a pointer to a ttype entry and return the corrisponding type_info
 // It's an implementation of three different functions from unwind-pe.h specific to our case and cannot be generalized for different encoding and size
-// Handling these differences will be done by accessing different members of the union according to the encoding
 const std::type_info *
 get_ttype_entry (uint8_t* entry)
 {
-    union unaligned
-    {
-        void *ptr;
-        unsigned u2 __attribute__ ((mode (HI)));
-        unsigned u4 __attribute__ ((mode (SI)));
-        unsigned u8 __attribute__ ((mode (DI)));
-        signed s2 __attribute__ ((mode (HI)));
-        signed s4 __attribute__ ((mode (SI)));
-        signed s8 __attribute__ ((mode (DI)));
-    } __attribute__((__packed__));
-
-    const union unaligned *u = (const union unaligned *) entry;
+    const int32_t *u = (const int32_t *) entry;
     unsigned long result;
-    result = u->s4 + (unsigned long)u;
+
+    result = *u + (unsigned long)u;
 	entry += 4;
     result = *(unsigned long *)result;
+    
     const std::type_info *tinfo = reinterpret_cast<const std::type_info *>(result);
     return tinfo;
 }
@@ -156,7 +146,7 @@ struct LSDA_Header {
         start_encoding = read_ptr[0];
         type_encoding = read_ptr[1];
         read_ptr += 2;
-        read_ptr = dec_uleb128(read_ptr, &type_table_offset);
+        read_ptr = read_uleb128(read_ptr, &type_table_offset);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
@@ -179,7 +169,7 @@ struct LSDA_CS_Header {
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
         encoding = read_ptr[0];
         read_ptr += 1;
-        read_ptr = dec_uleb128(read_ptr, &length);
+        read_ptr = read_uleb128(read_ptr, &length);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
@@ -199,10 +189,10 @@ struct LSDA_CS {
 
         // Modified version of read for compatability with decodoing function
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
-        read_ptr = dec_uleb128(read_ptr, &start);
-        read_ptr = dec_uleb128(read_ptr, &len);
-        read_ptr = dec_uleb128(read_ptr, &lp);
-        read_ptr = dec_uleb128(read_ptr, &action);
+        read_ptr = read_uleb128(read_ptr, &start);
+        read_ptr = read_uleb128(read_ptr, &len);
+        read_ptr = read_uleb128(read_ptr, &lp);
+        read_ptr = read_uleb128(read_ptr, &action);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
