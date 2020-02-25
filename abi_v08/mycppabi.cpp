@@ -88,7 +88,7 @@ typedef const uint8_t* LSDA_ptr;
 typedef _uleb128_t LSDA_line;
 
 const unsigned char *
-dec_uleb128 (const unsigned char *p, _uleb128_t *val)
+read_uleb128 (const unsigned char *p, _uleb128_t *val)
 {
   unsigned int shift = 0;
   unsigned char byte;
@@ -142,7 +142,7 @@ struct LSDA_Header {
         start_encoding = read_ptr[0];
         type_encoding = read_ptr[1];
         read_ptr += 2;
-        read_ptr = dec_uleb128(read_ptr, &type_table_offset);
+        read_ptr = read_uleb128(read_ptr, &type_table_offset);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
@@ -165,7 +165,7 @@ struct LSDA_CS_Header {
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
         encoding = read_ptr[0];
         read_ptr += 1;
-        read_ptr = dec_uleb128(read_ptr, &length);
+        read_ptr = read_uleb128(read_ptr, &length);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
@@ -185,10 +185,10 @@ struct LSDA_CS {
 
         // Modified version of read for compatability with decodoing function
         const unsigned char *read_ptr = (const unsigned char *)*lsda;
-        read_ptr = dec_uleb128(read_ptr, &start);
-        read_ptr = dec_uleb128(read_ptr, &len);
-        read_ptr = dec_uleb128(read_ptr, &lp);
-        read_ptr = dec_uleb128(read_ptr, &action);
+        read_ptr = read_uleb128(read_ptr, &start);
+        read_ptr = read_uleb128(read_ptr, &len);
+        read_ptr = read_uleb128(read_ptr, &lp);
+        read_ptr = read_uleb128(read_ptr, &action);
         *lsda = (LSDA_ptr)read_ptr;
     }
 
