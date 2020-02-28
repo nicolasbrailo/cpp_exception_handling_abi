@@ -54,7 +54,7 @@ void __cxa_throw(void* thrown_exception,
 {
     printf("__cxa_throw called\n");
 
-    __cxa_exception *header = ((__cxa_exception *) thrown_exception - 1);
+    __cxa_exception *header = ((__cxa_exception *) thrown_exception);
 
     // We need to save the type info in the exception header _Unwind_ will
     // receive, otherwise we won't be able to know it when unwinding
@@ -89,6 +89,44 @@ void __cxa_end_catch()
  * &LSDA_ptr will be a non-const pointer to a const place in memory
  */
 typedef const uint8_t* LSDA_ptr;
+typedef _uleb128_t LSDA_line;
+
+//This function receives a pointer the first byte to be decoded and the address of where to put the decoded value.
+const unsigned char *
+read_uleb128 (const unsigned char *p, _uleb128_t *val)
+{
+  unsigned int shift = 0;
+  unsigned char byte;
+  _uleb128_t result;
+  result = 0;
+  do
+    {
+      byte = *p++; 
+      // Shifting the byte to the left and propagating the new byte to it (if there's any)
+      result |= ((_uleb128_t)byte & 0x7f) << shift;
+      shift += 7;
+    }
+  // if the 8th bit is 1, this means that there still another byte to be concatinated to the current byte (if zero, then decoding is done)
+  while (byte & 0x80);
+  *val = result;
+  return p;
+}
+
+// This function recieves a pointer to a ttype entry and return the corrisponding type_info
+// It's an implementation of three different functions from unwind-pe.h specific to our case and cannot be generalized for different encoding and size
+const std::type_info *
+get_ttype_entry (uint8_t* entry)
+{
+    const int32_t *u = (const int32_t *) entry;
+    unsigned long result;
+
+    result = *u + (unsigned long)u;
+	entry += 4;
+    result = *(unsigned long *)result;
+    
+    const std::type_info *tinfo = reinterpret_cast<const std::type_info *>(result);
+    return tinfo;
+}
 
 struct LSDA_Header {
     /**
@@ -96,46 +134,44 @@ struct LSDA_Header {
      * as many bytes as read
      */
     LSDA_Header(LSDA_ptr *lsda) {
-        LSDA_ptr read_ptr = *lsda;
-
-        // Copy the LSDA fields
+        const unsigned char *read_ptr = (const unsigned char *)*lsda;
         start_encoding = read_ptr[0];
         type_encoding = read_ptr[1];
-        type_table_offset = read_ptr[2];
-
-        // Advance the lsda pointer
-        *lsda = read_ptr + sizeof(LSDA_Header);
+        read_ptr += 2;
+        read_ptr = read_uleb128(read_ptr, &type_table_offset);
+        *lsda = (LSDA_ptr)read_ptr;
     }
 
     uint8_t start_encoding;
     uint8_t type_encoding;
 
     // This is the offset, from the end of the header, to the types table
-    uint8_t type_table_offset;
+    LSDA_line type_table_offset;
 };
 
 struct LSDA_CS_Header {
     // Same as other LSDA constructors
     LSDA_CS_Header(LSDA_ptr *lsda) {
-        LSDA_ptr read_ptr = *lsda;
+        const unsigned char *read_ptr = (const unsigned char *)*lsda;
         encoding = read_ptr[0];
-        length = read_ptr[1];
-        *lsda = read_ptr + sizeof(LSDA_CS_Header);
+        read_ptr += 1;
+        read_ptr = read_uleb128(read_ptr, &length);
+        *lsda = (LSDA_ptr)read_ptr;
     }
 
     uint8_t encoding;
-    uint8_t length;
+    LSDA_line length;
 };
 
 struct LSDA_CS {
     // Same as other LSDA constructors
     LSDA_CS(LSDA_ptr *lsda) {
-        LSDA_ptr read_ptr = *lsda;
-        start = read_ptr[0];
-        len = read_ptr[1];
-        lp = read_ptr[2];
-        action = read_ptr[3];
-        *lsda = read_ptr + sizeof(LSDA_CS);
+        const unsigned char *read_ptr = (const unsigned char *)*lsda;
+        read_ptr = read_uleb128(read_ptr, &start);
+        read_ptr = read_uleb128(read_ptr, &len);
+        read_ptr = read_uleb128(read_ptr, &lp);
+        read_ptr = read_uleb128(read_ptr, &action);
+        *lsda = (LSDA_ptr)read_ptr;
     }
 
     LSDA_CS() { }
@@ -145,14 +181,14 @@ struct LSDA_CS {
     // is relative to start
  
     // Offset into function from which we could handle a throw
-    uint8_t start;
+    LSDA_line start;
     // Length of the block that might throw
-    uint8_t len;
+    LSDA_line len;
     // Landing pad
-    uint8_t lp;
+    LSDA_line lp;
     // Offset into action table + 1 (0 means no action)
     // Used to run destructors
-    uint8_t action;
+    LSDA_line action;
 };
 
 /**
@@ -188,7 +224,7 @@ struct LSDA
         // Get the start of the types table (it's actually the end of the
         // table, but since the action index will hold a negative index
         // for this table we can say it's the beginning
-        types_table_start( (const void**)(raw_lsda + header.type_table_offset) ),
+        types_table_start( (const void**)((uint8_t*)raw_lsda + header.type_table_offset) ),
 
         // Read the LSDA CS header
         cs_header(&raw_lsda),
@@ -197,7 +233,7 @@ struct LSDA
         cs_table_start(raw_lsda),
 
         // Calculate where the end of the LSDA CS table is
-        cs_table_end(raw_lsda + cs_header.length),
+        cs_table_end((const LSDA_ptr)((uint8_t*)(raw_lsda) + cs_header.length)),
 
         // Get the start of action tables
         action_tbl_start( cs_table_end )
@@ -279,11 +315,12 @@ _Unwind_Reason_Code __gxx_personality_v0 (
 
             // For a landing pad with a catch the action table will
             // hold an index to a list of types
-            int type_index = action[0];
+            int type_index = 4 * action[0];
 
             // Get the type of the exception we can handle
-            const void* catch_type_info = lsda.types_table_start[ -1 * type_index ];
-            const std::type_info *catch_ti = (const std::type_info *) catch_type_info;
+            uint8_t* catch_type_info = (uint8_t*)lsda.types_table_start;
+            catch_type_info -= type_index;
+            const std::type_info *catch_ti = get_ttype_entry(catch_type_info);
 
             // Get the type of the original exception being thrown
             __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
