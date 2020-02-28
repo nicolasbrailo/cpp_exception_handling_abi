@@ -54,7 +54,9 @@ void __cxa_throw(void* thrown_exception,
 {
     printf("__cxa_throw called\n");
 
-    __cxa_exception *header = ((__cxa_exception *) thrown_exception - 1);
+    __cxa_exception *header = ((__cxa_exception *) thrown_exception);
+    const char* nm = tinfo->name();
+    printf("%s\n", nm);
 
     // We need to save the type info in the exception header _Unwind_ will
     // receive, otherwise we won't be able to know it when unwinding
