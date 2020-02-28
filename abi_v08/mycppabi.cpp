@@ -87,6 +87,8 @@ void __cxa_end_catch()
 typedef const uint8_t* LSDA_ptr;
 typedef _uleb128_t LSDA_line;
 
+ 
+//This function receives a pointer the first byte to be decoded and the address of where to put the decoded value.
 const unsigned char *
 read_uleb128 (const unsigned char *p, _uleb128_t *val)
 {
@@ -96,10 +98,12 @@ read_uleb128 (const unsigned char *p, _uleb128_t *val)
   result = 0;
   do
     {
-      byte = *p++;
+      byte = *p++; 
+      // Shifting the byte to the left and propagating the new byte to it (if there's any)
       result |= ((_uleb128_t)byte & 0x7f) << shift;
       shift += 7;
     }
+  // if the 8th bit is 1, this means that there still another byte to be concatinated to the current byte (if zero, then decoding is done)
   while (byte & 0x80);
   *val = result;
   return p;
