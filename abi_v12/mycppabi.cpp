@@ -139,6 +139,9 @@ get_ttype_entry (const uint8_t* entry)
     const int32_t *u = (const int32_t *) entry;
     unsigned long result;
 
+    if (*u == 0)
+        return NULL;
+
     result = *u + (unsigned long)u;
 	entry += 4;
     result = *(unsigned long *)result;
@@ -494,7 +497,7 @@ _Unwind_Reason_Code __gxx_personality_v0 (
                 // Get the types this action can handle
                 const std::type_info *catch_type = lsda.get_type_for(action);
 
-                if (can_handle(catch_type, thrown_exception_type))
+                if (can_handle(thrown_exception_type, catch_type)) // order reversed in original
                 {
                     // If we are on search phase, tell _Unwind_ we can handle this one
                     if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
