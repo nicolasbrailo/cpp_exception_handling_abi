@@ -119,13 +119,15 @@ read_uleb128 (const unsigned char *p, _uleb128_t *val)
 const std::type_info *
 get_ttype_entry (uint8_t* entry)
 {
+    // Get a pointer to the value of the address inside entry
     const int32_t *u = (const int32_t *) entry;
     unsigned long result;
 
+    // The final address will be the value stored plus the address of the value (pc relative addressing)
     result = *u + (unsigned long)u;
-	entry += 4;
     result = *(unsigned long *)result;
     
+    //  Type cast it into a valid type_info
     const std::type_info *tinfo = reinterpret_cast<const std::type_info *>(result);
     return tinfo;
 }
