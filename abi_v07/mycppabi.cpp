@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <typeinfo>
 
 namespace __cxxabiv1 {
     struct __class_type_info {
