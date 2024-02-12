@@ -12,4 +12,10 @@
 *.la
 *.a
 
+# Assembly files
+*.s
+
 libcxxabi
+app
+*log.txt
+.vscode
